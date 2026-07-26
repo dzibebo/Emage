@@ -143,7 +143,13 @@ public class RenderManager {
                     }
 
                     queue.poll();
-                    user.sendPacket(packet);
+                    try {
+                        user.sendPacket(packet);
+                    } finally {
+                        if (packet instanceof ZeroCopyMapWrapper mapPacket) {
+                            mapPacket.getDelta().freeMemory();
+                        }
+                    }
                     sent++;
                     sentBytes += pktSize;
                 }

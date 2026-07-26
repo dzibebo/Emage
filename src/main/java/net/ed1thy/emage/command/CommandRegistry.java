@@ -387,6 +387,11 @@ public class CommandRegistry {
                 group.addNewWall(nodes);
             }
 
+            org.bukkit.Location loc = gridFrames.get(0).getLocation();
+            plugin.getLogger().info("Player " + player.getName() + " placed image: " + meta.sourceUrl() + 
+                                    " at X:" + loc.getBlockX() + " Y:" + loc.getBlockY() + " Z:" + loc.getBlockZ() + 
+                                    " in world " + loc.getWorld().getName());
+
             messageManager.sendActionBar(player, "");
             messageManager.sendSuccess(player, columns * rows, meta.syncGroupID());
         } finally {
@@ -614,6 +619,11 @@ public class CommandRegistry {
 
                 if (expectedSyncGroupId != -1 && meta.syncGroupID() != expectedSyncGroupId) {
                     messageManager.sendUndoMismatch(player);
+                    return;
+                }
+
+                if (!player.hasPermission("emage.admin") && !player.getUniqueId().equals(meta.creatorUUID())) {
+                    messageManager.sendNoPermission(player);
                     return;
                 }
 

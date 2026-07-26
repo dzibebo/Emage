@@ -67,3 +67,4 @@ messages:
   protected-frame: "<red>This Emage is protected. Use <color:#f3c6bb>/emage remove</color> to delete it."
   smart-url-hint: "<gray><i>Hint: Ensure you used a direct image link ending in .png, .jpg, or .gif (Not an imgur/discord link!)</i>"
   undo-mismatch: "<red>You are looking at a different Emage render than the one this Undo was for."
+  no-permission: "<red>You do not have permission to remove this image."
