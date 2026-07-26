@@ -234,6 +234,12 @@ public class CommandRegistry {
                     Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(oldMapId);
                     if (metaOpt.isPresent()) {
                         MapMetadata meta = metaOpt.get();
+
+                        if (!player.hasPermission("emage.admin") && !player.getUniqueId().equals(meta.creatorUUID())) {
+                            Bukkit.getScheduler().runTask(plugin, () -> messageManager.sendNoPermission(player));
+                            return;
+                        }
+
                         List<Integer> groupMapIds = repository.getMapIdsForGroup(meta.syncGroupID());
 
                         Bukkit.getScheduler().runTask(plugin, () -> {
