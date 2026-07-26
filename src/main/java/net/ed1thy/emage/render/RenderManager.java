@@ -145,7 +145,7 @@ public class RenderManager {
                     queue.poll();
                     try {
                         user.sendPacket(packet);
-                    } finally {
+                    } catch (Exception e) {
                         if (packet instanceof ZeroCopyMapWrapper mapPacket) {
                             mapPacket.getDelta().freeMemory();
                         }

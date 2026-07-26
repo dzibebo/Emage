@@ -24,6 +24,7 @@ public class ZeroCopyMapWrapper extends PacketWrapper<ZeroCopyMapWrapper> {
         ByteBuf deltaBuf = delta.packetBuf();
         if (deltaBuf != null && deltaBuf.refCnt() > 0) {
             nettyBuf.writeBytes(deltaBuf, deltaBuf.readerIndex(), deltaBuf.readableBytes());
+            delta.freeMemory();
         }
     }
 
