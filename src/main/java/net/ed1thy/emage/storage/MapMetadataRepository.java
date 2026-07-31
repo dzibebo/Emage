@@ -115,6 +115,19 @@ public class MapMetadataRepository {
         return uuids;
     }
 
+    @NotNull
+    public List<UUID> getPlacedFrameUUIDsForGroup(int syncGroupId) throws SQLException {
+        List<UUID> uuids = new ArrayList<>();
+        String sql = "SELECT frame_uuid FROM emage_placed_frames WHERE sync_group_id = ?";
+        try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, syncGroupId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) uuids.add(UUID.fromString(rs.getString(1)));
+            }
+        }
+        return uuids;
+    }
+
     public int getGroupIdByFrameUUID(UUID frameUuid) throws SQLException {
         String sql = "SELECT sync_group_id FROM emage_placed_frames WHERE frame_uuid = ?";
         try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {

@@ -142,6 +142,77 @@ public class CommandRegistry {
                     configManager.load();
                     messageManager.load();
                     messageManager.sendConfigReloaded(ctx.sender().getSender());
+
+                    // Fix chunk ban: scan all loaded chunks for orphaned DB entries
+                    // (item frames removed manually without /emage remove)
+                    Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                        try {
+                            int fixedGroups = 0;
+
+                            // Collect all emage frame UUIDs actually present in loaded chunks
+                            // Must be done on main thread first
+                            final java.util.Map<UUID, Integer> loadedFrameMapIds = new java.util.HashMap<>();
+                            try {
+                                java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+                                Bukkit.getScheduler().runTask(plugin, () -> {
+                                    try {
+                                        for (org.bukkit.World world : Bukkit.getWorlds()) {
+                                            for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
+                                                for (Entity entity : chunk.getEntities()) {
+                                                    if (entity instanceof ItemFrame frame) {
+                                                        if (frame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
+                                                            Integer mapId = frame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
+                                                            if (mapId != null) {
+                                                                loadedFrameMapIds.put(frame.getUniqueId(), mapId);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } finally {
+                                        latch.countDown();
+                                    }
+                                });
+                                latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
+
+                            // Compare DB records vs actual loaded world state.
+                            // Frames in DB but missing from all loaded chunks = broken by hand → remove.
+                            java.util.Set<Integer> allGroupIds = repository.getAllSyncGroupIDs();
+                            for (int groupId : allGroupIds) {
+                                List<UUID> dbFrameUuids = repository.getPlacedFrameUUIDsForGroup(groupId);
+                                boolean removedAny = false;
+
+                                for (UUID frameUuid : dbFrameUuids) {
+                                    if (!loadedFrameMapIds.containsKey(frameUuid)) {
+                                        // Frame UUID is in DB but not present in any loaded chunk.
+                                        // It was manually broken → safe to remove from DB.
+                                        repository.removePlacedFrameByUUID(frameUuid);
+                                        removedAny = true;
+                                    }
+                                }
+
+                                if (removedAny && repository.countPlacedFrames(groupId) == 0) {
+                                    flatFileStorage.deleteSyncGroup(groupId);
+                                    repository.deleteSyncGroup(groupId);
+                                    final int fGroupId = groupId;
+                                    Bukkit.getScheduler().runTask(plugin, () -> renderManager.unregisterSyncGroup(fGroupId));
+                                    fixedGroups++;
+                                }
+                            }
+
+                            if (fixedGroups > 0) {
+                                final int finalFixed = fixedGroups;
+                                plugin.getLogger().info("[Emage] Chunk-ban GC: cleaned up " + finalFixed + " orphaned sync group(s) during reload.");
+                            }
+                        } catch (Exception e) {
+                            plugin.getLogger().warning("[Emage] Chunk-ban GC scan failed: " + e.getMessage());
+                        }
+                    });
                 })
         );
     }
