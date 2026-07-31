@@ -1,9 +1,8 @@
-# Emage 🎨
+# Emage 🎨 (Custom Server Fork)
+
+> **Note:** This is a custom fork of Emage, maintained and specifically optimized with improvements for our custom server. It includes critical bug fixes (e.g., DecoderException chunk ban patches), memory leak fixes, and protocol alignment for Minecraft 1.21.
 
 A highly-optimized image and GIF renderer built for modern Paper servers. By completely bypassing Minecraft’s heavy default map API, Emage uses a custom packet pipeline to stream media directly to your players. You get the freedom to decorate your world with smooth animations without compromising server performance.
-
-[![Modrinth](https://img.shields.io/modrinth/dt/emage?logo=modrinth&label=Modrinth&color=00AF5C)](https://modrinth.com/plugin/emage)
-[![SpigotMC](https://img.shields.io/badge/SpigotMC-Download-orange)](https://www.spigotmc.org/resources/emage.130410/)
 
 ## Requirements
 * **Java 22**
