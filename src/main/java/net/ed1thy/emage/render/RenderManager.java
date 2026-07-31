@@ -5,6 +5,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.retrooper.packetevents.protocol.player.User;
 import com.github.retrooper.packetevents.wrapper.PacketWrapper;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import net.ed1thy.emage.Emage;
 import net.ed1thy.emage.config.ConfigManager;
@@ -135,7 +136,10 @@ public class RenderManager {
 
                     int pktSize = 8192;
                     if (packet instanceof ZeroCopyMapWrapper mapPacket) {
-                        pktSize = mapPacket.getDelta().packetBuf().readableBytes() + 16;
+                        ByteBuf buf = mapPacket.getDelta().packetBuf();
+                        if (buf != null && buf.refCnt() > 0) {
+                            pktSize = buf.readableBytes() + 16;
+                        }
                     }
 
                     if (sentBytes + pktSize > MAX_BYTES_PER_PLAYER_PER_TICK && sentBytes > 0) {
