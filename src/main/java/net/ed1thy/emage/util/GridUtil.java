@@ -33,7 +33,7 @@ public class GridUtil {
             case EAST  -> new GridVectors(0, 0, -1, 0, -1, 0);
             case WEST  -> new GridVectors(0, 0, 1, 0, -1, 0);
             case UP    -> new GridVectors(1, 0, 0, 0, 0, 1);
-            case DOWN  -> new GridVectors(1, 0, 0, 0, 0, 1);
+            case DOWN  -> new GridVectors(-1, 0, 0, 0, 0, 1);
             default -> new GridVectors(0, 0, 0, 0, 0, 0);
         };
     }
