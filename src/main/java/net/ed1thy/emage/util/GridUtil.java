@@ -26,14 +26,40 @@ public class GridUtil {
         public MissingFrameException(int x, int y, int z) { this.x = x; this.y = y; this.z = z; }
     }
 
-    private static GridVectors getVectors(BlockFace facing) {
+    private static GridVectors getVectors(ItemFrame frame) {
+        org.bukkit.block.BlockFace facing = frame.getFacing();
+        if (facing == org.bukkit.block.BlockFace.UP || facing == org.bukkit.block.BlockFace.DOWN) {
+            float yaw = frame.getLocation().getYaw();
+            yaw = (yaw % 360 + 360) % 360;
+            
+            if (facing == org.bukkit.block.BlockFace.DOWN) {
+                if (yaw >= 315 || yaw < 45) { // South
+                    return new GridVectors(1, 0, 0, 0, 0, -1);
+                } else if (yaw >= 45 && yaw < 135) { // West
+                    return new GridVectors(0, 0, 1, 1, 0, 0);
+                } else if (yaw >= 135 && yaw < 225) { // North
+                    return new GridVectors(-1, 0, 0, 0, 0, 1);
+                } else { // East
+                    return new GridVectors(0, 0, -1, -1, 0, 0);
+                }
+            } else { // UP
+                if (yaw >= 315 || yaw < 45) { // South
+                    return new GridVectors(-1, 0, 0, 0, 0, -1);
+                } else if (yaw >= 45 && yaw < 135) { // West
+                    return new GridVectors(0, 0, -1, 1, 0, 0);
+                } else if (yaw >= 135 && yaw < 225) { // North
+                    return new GridVectors(1, 0, 0, 0, 0, 1);
+                } else { // East
+                    return new GridVectors(0, 0, 1, -1, 0, 0);
+                }
+            }
+        }
+        
         return switch (facing) {
             case NORTH -> new GridVectors(-1, 0, 0, 0, -1, 0);
             case SOUTH -> new GridVectors(1, 0, 0, 0, -1, 0);
             case EAST  -> new GridVectors(0, 0, -1, 0, -1, 0);
             case WEST  -> new GridVectors(0, 0, 1, 0, -1, 0);
-            case UP    -> new GridVectors(1, 0, 0, 0, 0, 1);
-            case DOWN  -> new GridVectors(-1, 0, 0, 0, 0, 1);
             default -> new GridVectors(0, 0, 0, 0, 0, 0);
         };
     }
@@ -44,7 +70,7 @@ public class GridUtil {
 
     @Nullable
     public static GridData detectGrid(@NotNull ItemFrame clickedFrame, int inputCols, int inputRows, int maxLimit, @NotNull Predicate<ItemFrame> frameFilter) throws MissingFrameException {
-        GridVectors v = getVectors(clickedFrame.getFacing());
+        GridVectors v = getVectors(clickedFrame);
         if (v.colDx() == 0 && v.colDy() == 0 && v.colDz() == 0) return null;
 
         int searchRadius = maxLimit + 2;

@@ -298,6 +298,7 @@ public class CommandRegistry {
         }
 
         if (clickedFrame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
+            plugin.getLogger().info("Clicked frame yaw: " + clickedFrame.getLocation().getYaw() + ", rotation: " + clickedFrame.getRotation());
             int oldMapId = clickedFrame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
 
             Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
@@ -415,11 +416,31 @@ public class CommandRegistry {
             List<FrameNode> nodes = new ArrayList<>();
             com.github.retrooper.packetevents.protocol.player.User user = com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().getUser(player);
 
+            int clickedYawIndex = Math.round(gridFrames.get(0).getLocation().getYaw() / 90f) & 3;
+
             for (int i = 0; i < gridFrames.size(); i++) {
                 ItemFrame currentFrame = gridFrames.get(i);
                 int mapId = mapIds.get(i);
 
-                currentFrame.setRotation(org.bukkit.Rotation.NONE);
+                int frameYawIndex = Math.round(currentFrame.getLocation().getYaw() / 90f) & 3;
+                int rotationSteps = 0;
+                
+                if (currentFrame.getFacing() == org.bukkit.block.BlockFace.DOWN) {
+                    rotationSteps = (frameYawIndex - clickedYawIndex);
+                } else if (currentFrame.getFacing() == org.bukkit.block.BlockFace.UP) {
+                    rotationSteps = (clickedYawIndex - frameYawIndex);
+                }
+                rotationSteps = (rotationSteps % 4 + 4) % 4;
+
+                org.bukkit.Rotation bukkitRotation = switch(rotationSteps) {
+                    case 0 -> org.bukkit.Rotation.NONE;
+                    case 1 -> org.bukkit.Rotation.CLOCKWISE;
+                    case 2 -> org.bukkit.Rotation.FLIPPED;
+                    case 3 -> org.bukkit.Rotation.COUNTER_CLOCKWISE;
+                    default -> org.bukkit.Rotation.NONE;
+                };
+
+                currentFrame.setRotation(bukkitRotation);
                 currentFrame.setVisible(false);
                 currentFrame.setGlowing(false);
                 currentFrame.getPersistentDataContainer().set(interactListener.getEmageKey(), PersistentDataType.INTEGER, mapId);
