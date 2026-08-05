@@ -39,6 +39,9 @@ public class MessageManager {
     private String imageSizeLimitRaw;
     private String gifFrameLimitRaw;
     private String protectedFrameRaw;
+    
+    private String undoName;
+    private String undoHover;
 
     private Sound successSound;
     private Sound errorSound;
@@ -70,8 +73,8 @@ public class MessageManager {
         this.undoMismatch = prefix.append(miniMessage.deserialize(config.getString("messages.undo-mismatch", "<red>You are looking at a different Emage render than the one this Undo was for.")));
         this.noPermission = prefix.append(miniMessage.deserialize(config.getString("messages.no-permission", "<red>You do not have permission to remove this image.")));
 
-        this.processingStartedRaw = config.getString("messages.processing-started", "<aqua>Processing image for <color:#4CABBB><width>x<height></color> grid. Please wait...");
-        this.successRaw = config.getString("messages.success", "<green>Successfully applied image to <color:#4CABBB><total></color> frame(s)! <gray>[<red><click:run_command:'/emage remove <sync_group_id>'><hover:show_text:'Click to remove this render'>Undo</hover></click></red>]</gray>");
+        this.processingStartedRaw = config.getString("messages.processing-started", "<color:#fd6039>Processing image for <color:#f3c6bb><width>x<height></color> grid. Please wait...");
+        this.successRaw = config.getString("messages.success", "<green>Successfully applied image to <color:#f3c6bb><total></color> frame(s)! <gray>[<red><click:run_command:'/emage remove <sync_group_id>'><hover:show_text:'<undo_hover>'><undo_name></hover></click></red>]</gray>");
         this.errorRaw = config.getString("messages.error", "<red>An error occurred: <gray><error>");
         this.processErrorRaw = config.getString("messages.process-error", "<red>Failed to process image: <gray><error>");
         this.readErrorRaw = config.getString("messages.read-error", "<red>Error reading image: <gray><error>");
@@ -80,6 +83,9 @@ public class MessageManager {
         this.imageSizeLimitRaw = config.getString("messages.image-size-limit", "<red>Images are limited to a max grid size of <max_width>x<max_height>.");
         this.gifFrameLimitRaw = config.getString("messages.gif-frame-limit", "<red>GIFs are limited to a maximum of <max_frames> frames. (Provided GIF has <frames>)");
         this.protectedFrameRaw = config.getString("messages.protected-frame", "<red>This Emage is protected. Use <white>/emage remove</white> to delete it.");
+
+        this.undoName = config.getString("messages.undo-name", "Undo");
+        this.undoHover = config.getString("messages.undo-hover", "Click to remove this render");
 
         if (configManager.enableSounds) {
             try { this.successSound = Sound.sound(Key.key(configManager.soundSuccess), Sound.Source.MASTER, 0.6f, 1.0f); } catch (Exception ignored) {}
@@ -175,7 +181,9 @@ public class MessageManager {
     public void sendSuccess(@NotNull Audience audience, int totalFrames, int syncGroupId) {
         String raw = successRaw
                 .replace("<total>", String.valueOf(totalFrames))
-                .replace("<sync_group_id>", String.valueOf(syncGroupId));
+                .replace("<sync_group_id>", String.valueOf(syncGroupId))
+                .replace("<undo_name>", undoName)
+                .replace("<undo_hover>", undoHover);
         audience.sendMessage(prefix.append(miniMessage.deserialize(raw)));
         playSafely(audience, successSound);
     }
