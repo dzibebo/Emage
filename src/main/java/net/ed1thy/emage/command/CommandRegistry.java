@@ -425,7 +425,9 @@ public class CommandRegistry {
                 int frameYawIndex = Math.round(currentFrame.getLocation().getYaw() / 90f) & 3;
                 int rotationSteps = 0;
                 
-                if (currentFrame.getFacing() == org.bukkit.block.BlockFace.DOWN || currentFrame.getFacing() == org.bukkit.block.BlockFace.UP) {
+                if (currentFrame.getFacing() == org.bukkit.block.BlockFace.DOWN) {
+                    rotationSteps = (frameYawIndex - clickedYawIndex);
+                } else if (currentFrame.getFacing() == org.bukkit.block.BlockFace.UP) {
                     rotationSteps = (clickedYawIndex - frameYawIndex);
                 }
                 rotationSteps = (rotationSteps % 4 + 4) % 4;
