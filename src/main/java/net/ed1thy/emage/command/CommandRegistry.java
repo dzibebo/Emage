@@ -819,7 +819,7 @@ public class CommandRegistry {
 
                     for (ItemFrame f : wallFrames) {
                         int currentOrdinal = f.getRotation().ordinal();
-                        int newOrdinal = (currentOrdinal + 2) % 8;
+                        int newOrdinal = (currentOrdinal + 1) % 8;
                         f.setRotation(org.bukkit.Rotation.values()[newOrdinal]);
                     }
                 });
