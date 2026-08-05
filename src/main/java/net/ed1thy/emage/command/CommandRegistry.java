@@ -812,14 +812,61 @@ public class CommandRegistry {
                     return;
                 }
 
+                int columns = meta.columns();
+                int rows = meta.rows();
+                boolean isSquare = (columns == rows);
+
                 List<Integer> groupMapIds = repository.getMapIdsForGroup(meta.syncGroupID());
 
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     List<ItemFrame> wallFrames = findContiguousEmageFrames(clickedFrame, groupMapIds);
+                    net.ed1thy.emage.render.SyncGroup group = this.renderManager.getSyncGroup(meta.syncGroupID());
 
                     for (ItemFrame f : wallFrames) {
+                        int currentMapId = f.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
+                        int currentIndex = groupMapIds.indexOf(currentMapId);
+
+                        if (currentIndex == -1) continue;
+
+                        int newMapId = currentMapId;
+
+                        // Only swap pieces if it's a square!
+                        if (isSquare) {
+                            int N = columns;
+                            int r = currentIndex / N;
+                            int c = currentIndex % N;
+                            // 90 degree clockwise swap
+                            int srcR = N - 1 - c;
+                            int srcC = r;
+                            int srcIndex = srcR * N + srcC;
+                            newMapId = groupMapIds.get(srcIndex);
+                        }
+
+                        // Update PDC and map if swapped
+                        if (newMapId != currentMapId) {
+                            f.getPersistentDataContainer().set(interactListener.getEmageKey(), PersistentDataType.INTEGER, newMapId);
+                            org.bukkit.inventory.ItemStack bukkitMap = new org.bukkit.inventory.ItemStack(org.bukkit.Material.FILLED_MAP);
+                            if (bukkitMap.getItemMeta() instanceof org.bukkit.inventory.meta.MapMeta mapMeta) {
+                                mapMeta.setMapId(newMapId);
+                                bukkitMap.setItemMeta(mapMeta);
+                            }
+                            f.setItem(bukkitMap);
+                            
+                            if (group != null) {
+                                for (net.ed1thy.emage.model.FrameNode node : group.getNodes()) {
+                                    if (node.getFrameUUID().equals(f.getUniqueId())) {
+                                        node.setMapID(newMapId);
+                                        com.github.retrooper.packetevents.protocol.item.ItemStack peItem = io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitItemStack(bukkitMap);
+                                        node.setCachedItem(peItem);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Always rotate 90 degrees
                         int currentOrdinal = f.getRotation().ordinal();
-                        int newOrdinal = (currentOrdinal + 1) % 8;
+                        int newOrdinal = (currentOrdinal + 2) % 8;
                         f.setRotation(org.bukkit.Rotation.values()[newOrdinal]);
                     }
                 });
