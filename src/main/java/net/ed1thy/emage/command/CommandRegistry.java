@@ -136,6 +136,16 @@ public class CommandRegistry {
                 })
         );
 
+        commandManager.command(builder.literal("rotate")
+                .handler(ctx -> {
+                    if (!(ctx.sender().getSender() instanceof Player player)) {
+                        messageManager.sendOnlyPlayers(ctx.sender().getSender());
+                        return;
+                    }
+                    Bukkit.getScheduler().runTask(plugin, () -> handleRotateSync(player));
+                })
+        );
+
         commandManager.command(builder.literal("reload")
                 .permission("emage.admin")
                 .handler(ctx -> {
@@ -774,5 +784,48 @@ public class CommandRegistry {
         }
     }
 
+    private void handleRotateSync(Player player) {
+        Entity target = player.getTargetEntity(10);
+        if (!(target instanceof ItemFrame clickedFrame)) {
+            messageManager.sendNoFrame(player);
+            return;
+        }
+
+        if (!clickedFrame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
+            messageManager.sendNotEmageFrame(player);
+            return;
+        }
+
+        int mapId = clickedFrame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
+
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(mapId);
+                if (metaOpt.isEmpty()) {
+                    return; // Ignore if no metadata
+                }
+
+                MapMetadata meta = metaOpt.get();
+
+                if (!player.hasPermission("emage.admin") && !player.getUniqueId().equals(meta.creatorUUID())) {
+                    messageManager.sendNoPermission(player);
+                    return;
+                }
+
+                List<Integer> groupMapIds = repository.getMapIdsForGroup(meta.syncGroupID());
+
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    List<ItemFrame> wallFrames = findContiguousEmageFrames(clickedFrame, groupMapIds);
+                    for (ItemFrame f : wallFrames) {
+                        int currentOrdinal = f.getRotation().ordinal();
+                        int newOrdinal = (currentOrdinal + 2) % 8;
+                        f.setRotation(org.bukkit.Rotation.values()[newOrdinal]);
+                    }
+                });
+            } catch (Exception e) {
+                plugin.getLogger().severe("Failed to rotate Emage: " + e.getMessage());
+            }
+        });
+    }
     public void shutdown() {}
 }
