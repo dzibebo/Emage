@@ -812,14 +812,64 @@ public class CommandRegistry {
                     return;
                 }
 
+                int columns = meta.columns();
+                int rows = meta.rows();
+
+                if (columns != rows) {
+                    messageManager.sendCannotRotateNonSquare(player);
+                    return;
+                }
+
+                int N = columns;
                 List<Integer> groupMapIds = repository.getMapIdsForGroup(meta.syncGroupID());
 
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     List<ItemFrame> wallFrames = findContiguousEmageFrames(clickedFrame, groupMapIds);
+                    SyncGroup group = renderManager.getSyncGroup(meta.syncGroupID());
+
                     for (ItemFrame f : wallFrames) {
+                        int currentMapId = f.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
+                        int currentIndex = groupMapIds.indexOf(currentMapId);
+
+                        if (currentIndex == -1) continue;
+
+                        int r = currentIndex / N;
+                        int c = currentIndex % N;
+
+                        // 90 degree clockwise rotation of piece position
+                        int srcR = N - 1 - c;
+                        int srcC = r;
+                        int srcIndex = srcR * N + srcC;
+
+                        int newMapId = groupMapIds.get(srcIndex);
+
+                        // 1. Update PDC
+                        f.getPersistentDataContainer().set(interactListener.getEmageKey(), PersistentDataType.INTEGER, newMapId);
+
+                        // 2. Update Bukkit ItemStack for legacy/vanilla rendering
+                        ItemStack bukkitMap = new ItemStack(Material.FILLED_MAP);
+                        if (bukkitMap.getItemMeta() instanceof MapMeta mapMeta) {
+                            mapMeta.setMapId(newMapId);
+                            bukkitMap.setItemMeta(mapMeta);
+                        }
+                        f.setItem(bukkitMap);
+
+                        // 3. Update Rotation
                         int currentOrdinal = f.getRotation().ordinal();
                         int newOrdinal = (currentOrdinal + 2) % 8;
                         f.setRotation(org.bukkit.Rotation.values()[newOrdinal]);
+
+                        // 4. Update FrameNode in SyncGroup to fix animations and packet resends
+                        if (group != null) {
+                            for (FrameNode node : group.getNodes()) {
+                                if (node.getFrameUUID().equals(f.getUniqueId())) {
+                                    node.setMapID(newMapId);
+                                    com.github.retrooper.packetevents.protocol.item.ItemStack peItem = SpigotConversionUtil.fromBukkitItemStack(bukkitMap);
+                                    node.setCachedItem(peItem);
+                                    break;
+                                }
+                            }
+                        }
                     }
                 });
             } catch (Exception e) {
