@@ -731,27 +731,19 @@ public class CommandRegistry {
                     List<ItemFrame> wallFrames = findContiguousEmageFrames(clickedFrame, groupMapIds);
 
                     for (ItemFrame f : wallFrames) {
-                        // Each right-click rotation in Minecraft advances by one step (45°).
-                        // org.bukkit.Rotation has 8 values: NONE, CLOCKWISE_45, CLOCKWISE, CLOCKWISE_135,
-                        // FLIPPED, FLIPPED_45, COUNTER_CLOCKWISE, COUNTER_CLOCKWISE_45
+                        // Advance rotation by one step (45°). All 8 values of org.bukkit.Rotation
+                        // are: NONE, CLOCKWISE_45, CLOCKWISE, CLOCKWISE_135,
+                        //       FLIPPED, FLIPPED_45, COUNTER_CLOCKWISE, COUNTER_CLOCKWISE_45
+                        // setRotation() sends entity-metadata update to all players in range automatically.
                         org.bukkit.Rotation current = f.getRotation();
                         org.bukkit.Rotation next = org.bukkit.Rotation.values()[(current.ordinal() + 1) % org.bukkit.Rotation.values().length];
                         f.setRotation(next);
+                    }
 
-                        // Update packets for all online players tracking this frame
-                        SyncGroup group = renderManager.getSyncGroup(meta.syncGroupID());
-                        if (group != null) {
-                            group.getNodes().stream()
-                                    .filter(node -> node.getFrameUUID().equals(f.getUniqueId()))
-                                    .findFirst()
-                                    .ifPresent(node -> {
-                                        for (org.bukkit.entity.Player p : f.getWorld().getPlayers()) {
-                                            com.github.retrooper.packetevents.protocol.player.User u =
-                                                    com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().getUser(p);
-                                            if (u != null) packetSender.spoofItemFrameMap(u, node);
-                                        }
-                                    });
-                        }
+                    // Reset SyncGroup so all players get a fresh map-data packet with the new rotation.
+                    SyncGroup group = renderManager.getSyncGroup(meta.syncGroupID());
+                    if (group != null) {
+                        group.resetInitialized();
                     }
 
                     messageManager.sendRotated(player);

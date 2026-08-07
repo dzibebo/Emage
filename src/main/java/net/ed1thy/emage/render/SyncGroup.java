@@ -313,6 +313,11 @@ public class SyncGroup {
         return nodes;
     }
 
+    /** Forces all players to be re-initialized on next tick (e.g. after a rotation change). */
+    public void resetInitialized() {
+        initializedUsers.clear();
+    }
+
     public void cleanup() {
         for (MapFrameUpdate update : baseFrames.values()) {
             update.freeMemory();
