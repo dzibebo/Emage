@@ -73,7 +73,7 @@ public class MessageManager {
         this.smartUrlHint = prefix.append(miniMessage.deserialize(config.getString("messages.smart-url-hint", "<gray><i>Hint: Ensure you used a direct image link ending in .png, .jpg, or .gif (Not an imgur/discord viewer link!)</i>")));
         this.undoMismatch = prefix.append(miniMessage.deserialize(config.getString("messages.undo-mismatch", "<red>You are looking at a different Emage render than the one this Undo was for.")));
         this.noPermission = prefix.append(miniMessage.deserialize(config.getString("messages.no-permission", "<red>You do not have permission to remove this image.")));
-        this.rotated = prefix.append(miniMessage.deserialize(config.getString("messages.rotated", "<green>Rotated the render by 45°.")));
+        this.rotated = prefix.append(miniMessage.deserialize(config.getString("messages.rotated", "<green>Rotated the render by 90°.")));
 
         this.processingStartedRaw = config.getString("messages.processing-started", "<color:#fd6039>Processing image for <color:#f3c6bb><width>x<height></color> grid. Please wait...");
         this.successRaw = config.getString("messages.success", "<green>Successfully applied image to <color:#f3c6bb><total></color> frame(s)! <gray>[<red><click:run_command:'/emage remove <sync_group_id>'><hover:show_text:'<undo_hover>'><undo_name></hover></click></red>]</gray>");

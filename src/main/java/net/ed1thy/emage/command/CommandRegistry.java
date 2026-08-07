@@ -726,8 +726,8 @@ public class CommandRegistry {
                     return;
                 }
 
-                // Compute new rotation (accumulate +45°, wrap at 360)
-                int newRotation = (meta.rotationDegrees() + 45) % 360;
+                // Compute new rotation (accumulate +90°, wrap at 360)
+                int newRotation = (meta.rotationDegrees() + 90) % 360;
 
                 List<Integer> groupMapIds = repository.getMapIdsForGroup(meta.syncGroupID());
 
