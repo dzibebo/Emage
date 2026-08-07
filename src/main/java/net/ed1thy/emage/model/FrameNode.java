@@ -13,8 +13,8 @@ public class FrameNode {
     private final int blockX;
     private final int blockY;
     private final int blockZ;
-    private int mapId;
-    private com.github.retrooper.packetevents.protocol.item.ItemStack cachedItem;
+    private final int mapId;
+    private final com.github.retrooper.packetevents.protocol.item.ItemStack cachedItem;
 
     public FrameNode(int entityID, @NotNull UUID frameUUID, @NotNull UUID worldUUID,
                      int chunkX, int chunkZ, int blockX, int blockY, int blockZ, int mapId,
@@ -43,7 +43,5 @@ public class FrameNode {
     public int getBlockY() { return blockY; }
     public int getBlockZ() { return blockZ; }
     public int getMapID() { return mapId; }
-    public void setMapID(int mapId) { this.mapId = mapId; }
-    public com.github.retrooper.packetevents.protocol.item.ItemStack getCachedItem() { return cachedItem; }
-    public void setCachedItem(com.github.retrooper.packetevents.protocol.item.ItemStack cachedItem) { this.cachedItem = cachedItem; }
+    @NotNull public com.github.retrooper.packetevents.protocol.item.ItemStack getCachedItem() { return cachedItem; }
 }

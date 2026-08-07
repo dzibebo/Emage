@@ -136,16 +136,6 @@ public class CommandRegistry {
                 })
         );
 
-        commandManager.command(builder.literal("rotate")
-                .handler(ctx -> {
-                    if (!(ctx.sender().getSender() instanceof Player player)) {
-                        messageManager.sendOnlyPlayers(ctx.sender().getSender());
-                        return;
-                    }
-                    Bukkit.getScheduler().runTask(plugin, () -> handleRotateSync(player));
-                })
-        );
-
         commandManager.command(builder.literal("reload")
                 .permission("emage.admin")
                 .handler(ctx -> {
@@ -784,96 +774,5 @@ public class CommandRegistry {
         }
     }
 
-    private void handleRotateSync(Player player) {
-        Entity target = player.getTargetEntity(10);
-        if (!(target instanceof ItemFrame clickedFrame)) {
-            messageManager.sendNoFrame(player);
-            return;
-        }
-
-        if (!clickedFrame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
-            messageManager.sendNotEmageFrame(player);
-            return;
-        }
-
-        int mapId = clickedFrame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
-
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            try {
-                Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(mapId);
-                if (metaOpt.isEmpty()) {
-                    return; // Ignore if no metadata
-                }
-
-                MapMetadata meta = metaOpt.get();
-
-                if (!player.hasPermission("emage.admin") && !player.getUniqueId().equals(meta.creatorUUID())) {
-                    messageManager.sendNoPermission(player);
-                    return;
-                }
-
-                int columns = meta.columns();
-                int rows = meta.rows();
-                boolean isSquare = (columns == rows);
-
-                List<Integer> groupMapIds = repository.getMapIdsForGroup(meta.syncGroupID());
-
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    List<ItemFrame> wallFrames = findContiguousEmageFrames(clickedFrame, groupMapIds);
-                    net.ed1thy.emage.render.SyncGroup group = this.renderManager.getSyncGroup(meta.syncGroupID());
-
-                    for (ItemFrame f : wallFrames) {
-                        int currentMapId = f.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
-                        int currentIndex = groupMapIds.indexOf(currentMapId);
-
-                        if (currentIndex == -1) continue;
-
-                        int newMapId = currentMapId;
-
-                        // Only swap pieces if it's a square!
-                        if (isSquare) {
-                            int N = columns;
-                            int r = currentIndex / N;
-                            int c = currentIndex % N;
-                            // 90 degree clockwise swap
-                            int srcR = N - 1 - c;
-                            int srcC = r;
-                            int srcIndex = srcR * N + srcC;
-                            newMapId = groupMapIds.get(srcIndex);
-                        }
-
-                        // Update PDC and map if swapped
-                        if (newMapId != currentMapId) {
-                            f.getPersistentDataContainer().set(interactListener.getEmageKey(), PersistentDataType.INTEGER, newMapId);
-                            org.bukkit.inventory.ItemStack bukkitMap = new org.bukkit.inventory.ItemStack(org.bukkit.Material.FILLED_MAP);
-                            if (bukkitMap.getItemMeta() instanceof org.bukkit.inventory.meta.MapMeta mapMeta) {
-                                mapMeta.setMapId(newMapId);
-                                bukkitMap.setItemMeta(mapMeta);
-                            }
-                            f.setItem(bukkitMap);
-                            
-                            if (group != null) {
-                                for (net.ed1thy.emage.model.FrameNode node : group.getNodes()) {
-                                    if (node.getFrameUUID().equals(f.getUniqueId())) {
-                                        node.setMapID(newMapId);
-                                        com.github.retrooper.packetevents.protocol.item.ItemStack peItem = io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitItemStack(bukkitMap);
-                                        node.setCachedItem(peItem);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Always rotate 90 degrees
-                        int currentOrdinal = f.getRotation().ordinal();
-                        int newOrdinal = (currentOrdinal + 2) % 8;
-                        f.setRotation(org.bukkit.Rotation.values()[newOrdinal]);
-                    }
-                });
-            } catch (Exception e) {
-                plugin.getLogger().severe("Failed to rotate Emage: " + e.getMessage());
-            }
-        });
-    }
     public void shutdown() {}
 }
