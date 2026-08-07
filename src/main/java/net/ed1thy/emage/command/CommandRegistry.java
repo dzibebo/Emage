@@ -136,16 +136,6 @@ public class CommandRegistry {
                 })
         );
 
-        commandManager.command(builder.literal("rotate")
-                .handler(ctx -> {
-                    if (!(ctx.sender().getSender() instanceof Player player)) {
-                        messageManager.sendOnlyPlayers(ctx.sender().getSender());
-                        return;
-                    }
-                    Bukkit.getScheduler().runTask(plugin, () -> handleRotateSync(player));
-                })
-        );
-
         commandManager.command(builder.literal("reload")
                 .permission("emage.admin")
                 .handler(ctx -> {
@@ -666,7 +656,7 @@ public class CommandRegistry {
                         MapMetadata meta = repository.createSyncGroup(player.getUniqueId(), url, fileHash, finalColumns, finalRows, totalFrames, delayMs);
                         List<Integer> mapIds = repository.allocateVirtualMapIds(meta.syncGroupID(), finalColumns * finalRows);
 
-                        pipeline.processStreamAsync(provider, meta.syncGroupID(), mapIds, finalColumns, finalRows, 0, progress -> {
+                        pipeline.processStreamAsync(provider, meta.syncGroupID(), mapIds, finalColumns, finalRows, progress -> {
                             int percent = (int) Math.round(progress * 100);
                             messageManager.sendActionBar(player, "<color:#4CABBB>Processing Frames: <white>" + percent + "%</white></color>");
                         }).whenComplete((baseFrame, err) -> {
@@ -693,151 +683,6 @@ public class CommandRegistry {
                     }
                 }, vtExecutor);
             });
-        });
-    }
-
-    private void handleRotateSync(Player player) {
-        Entity target = player.getTargetEntity(10);
-        if (!(target instanceof ItemFrame clickedFrame)) {
-            messageManager.sendNoFrame(player);
-            return;
-        }
-
-        if (!clickedFrame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
-            messageManager.sendNotEmageFrame(player);
-            return;
-        }
-
-        int mapId = clickedFrame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
-
-        // Collect frames synchronously, then go async for re-render
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            try {
-                Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(mapId);
-                if (metaOpt.isEmpty()) {
-                    Bukkit.getScheduler().runTask(plugin, () -> messageManager.sendMetadataNotFound(player));
-                    return;
-                }
-
-                MapMetadata meta = metaOpt.get();
-
-                if (!player.hasPermission("emage.admin") && !player.getUniqueId().equals(meta.creatorUUID())) {
-                    Bukkit.getScheduler().runTask(plugin, () -> messageManager.sendNoPermission(player));
-                    return;
-                }
-
-                // Compute new rotation (accumulate +90°, wrap at 360)
-                int newRotation = (meta.rotationDegrees() + 90) % 360;
-
-                List<Integer> groupMapIds = repository.getMapIdsForGroup(meta.syncGroupID());
-
-                // Collect frames on main thread, then immediately go async
-                final List<ItemFrame> wallFrames = new java.util.concurrent.CopyOnWriteArrayList<>();
-                final List<ItemFrame> orderedFrames = new java.util.concurrent.CopyOnWriteArrayList<>();
-                java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    try {
-                        List<ItemFrame> bfsFrames = findContiguousEmageFrames(clickedFrame, groupMapIds);
-                        wallFrames.addAll(bfsFrames);
-
-                        // Get frames in proper grid order so tile assignment matches mapIds order
-                        Set<UUID> validUuids = bfsFrames.stream().map(Entity::getUniqueId).collect(Collectors.toSet());
-                        try {
-                            GridUtil.GridData gridData = GridUtil.detectGrid(clickedFrame, meta.columns(), meta.rows(),
-                                    configManager.maxImageGridSize, f -> validUuids.contains(f.getUniqueId()));
-                            if (gridData != null && gridData.frames().size() == bfsFrames.size()) {
-                                orderedFrames.addAll(gridData.frames());
-                            } else {
-                                orderedFrames.addAll(bfsFrames); // fallback
-                            }
-                        } catch (Exception ignored) {
-                            orderedFrames.addAll(bfsFrames); // fallback
-                        }
-
-                        // Show loading spinner
-                        for (ItemFrame f : wallFrames) {
-                            f.setItem(new ItemStack(Material.CLOCK));
-                            f.setGlowing(true);
-                        }
-                        messageManager.sendActionBar(player, "<color:#4CABBB>Rotating...</color>");
-                    } finally {
-                        latch.countDown();
-                    }
-                });
-                latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
-
-                if (wallFrames.isEmpty()) return;
-
-                // Download the image and re-render with new rotation
-                imageDownloader.downloadImageStream(meta.sourceUrl()).whenComplete((inputStream, throwable) -> {
-                    if (throwable != null) {
-                        Bukkit.getScheduler().runTask(plugin, () -> revertLoadingSpinner(wallFrames));
-                        messageManager.sendError(player, getFriendlyErrorMessage(throwable));
-                        return;
-                    }
-
-                    CompletableFuture.runAsync(() -> {
-                        try {
-                            byte[] imageBytes = inputStream.readAllBytes();
-                            closeStreamQuietly(inputStream);
-
-                            boolean isGif = imageBytes.length > 3 && imageBytes[0] == 'G' && imageBytes[1] == 'I' && imageBytes[2] == 'F';
-                            net.ed1thy.emage.processing.ImageFrameProvider provider;
-                            if (isGif) {
-                                net.ed1thy.emage.processing.GifDecoder gifDecoder = new net.ed1thy.emage.processing.GifDecoder();
-                                gifDecoder.read(imageBytes);
-                                provider = gifDecoder;
-                            } else {
-                                javax.imageio.ImageIO.setUseCache(false);
-                                java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(new ByteArrayInputStream(imageBytes));
-                                if (img == null) {
-                                    Bukkit.getScheduler().runTask(plugin, () -> revertLoadingSpinner(wallFrames));
-                                    messageManager.sendError(player, "Unsupported image format.");
-                                    return;
-                                }
-                                provider = new net.ed1thy.emage.processing.StaticImageProvider(img);
-                            }
-
-                            // Delete old frame data and re-render with new rotation
-                            flatFileStorage.deleteSyncGroup(meta.syncGroupID());
-
-                            pipeline.processStreamAsync(provider, meta.syncGroupID(), groupMapIds,
-                                    meta.columns(), meta.rows(), newRotation, progress -> {
-                                        int pct = (int) Math.round(progress * 100);
-                                        messageManager.sendActionBar(player, "<color:#4CABBB>Rotating: <white>" + pct + "%</white></color>");
-                                    }).whenComplete((baseFrame, err) -> {
-                                if (err != null) {
-                                    plugin.getLogger().warning("Rotate re-render failed: " + err.getMessage());
-                                    Bukkit.getScheduler().runTask(plugin, () -> revertLoadingSpinner(wallFrames));
-                                    messageManager.sendError(player, err.getMessage());
-                                    return;
-                                }
-
-                                // Persist new rotation value
-                                try { repository.updateRotationDegrees(meta.syncGroupID(), newRotation); } catch (Exception ignored) {}
-
-                                // Re-apply using ORDERED frames so tile[i] goes to correct frame position
-                                Bukkit.getScheduler().runTask(plugin, () -> {
-                                    finalizeFrameApplication(player, orderedFrames, meta, groupMapIds,
-                                            meta.columns(), meta.rows(), baseFrame, () -> {});
-                                    messageManager.sendRotated(player);
-
-                                    // Force SyncGroup re-init so all clients refresh
-                                    SyncGroup group = renderManager.getSyncGroup(meta.syncGroupID());
-                                    if (group != null) group.resetInitialized();
-                                });
-                            });
-
-                        } catch (Exception e) {
-                            Bukkit.getScheduler().runTask(plugin, () -> revertLoadingSpinner(wallFrames));
-                            messageManager.sendError(player, e.getMessage());
-                        }
-                    }, vtExecutor);
-                });
-
-            } catch (Exception e) {
-                plugin.getLogger().warning("Failed rotate: " + e.getMessage());
-            }
         });
     }
 

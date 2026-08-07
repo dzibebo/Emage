@@ -114,22 +114,6 @@ public class SchemaInitializer {
             try (PreparedStatement ps = connection.prepareStatement("INSERT OR REPLACE INTO emage_schema_version (id, version) VALUES (1, 2)")) {
                 ps.executeUpdate();
             }
-            currentVersion = 2;
-        }
-
-        if (currentVersion < 3) {
-            try (Statement stmt = connection.createStatement()) {
-                boolean colExists = false;
-                try (ResultSet rs = connection.getMetaData().getColumns(null, null, "emage_metadata", "rotation_degrees")) {
-                    if (rs.next()) colExists = true;
-                }
-                if (!colExists) {
-                    stmt.execute("ALTER TABLE emage_metadata ADD COLUMN rotation_degrees INTEGER NOT NULL DEFAULT 0;");
-                }
-            }
-            try (PreparedStatement ps = connection.prepareStatement("INSERT OR REPLACE INTO emage_schema_version (id, version) VALUES (1, 3)")) {
-                ps.executeUpdate();
-            }
         }
     }
 }

@@ -10,8 +10,7 @@ public record MapMetadata(
         int columns,
         int rows,
         int totalFrames,
-        int delayMs,
-        int rotationDegrees
+        int delayMs
 ) {
     public boolean isAnimated() {
         return totalFrames > 1 && delayMs > 0;

@@ -155,7 +155,7 @@ public class MapMetadataRepository {
                     ps.setInt(6, delayMs);
                     ps.executeUpdate();
                     try (ResultSet rs = ps.getGeneratedKeys()) {
-                        if (rs.next()) return new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs, 0);
+                        if (rs.next()) return new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs);
                         else throw new SQLException("Failed to retrieve auto-generated sync_group_id from SQLite.");
                     }
                 }
@@ -239,7 +239,7 @@ public class MapMetadataRepository {
                 if (rs.next()) return Optional.of(new MapMetadata(
                         rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
                         rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
-                        rs.getInt("total_frames"), rs.getInt("delay_ms"), rs.getInt("rotation_degrees")
+                        rs.getInt("total_frames"), rs.getInt("delay_ms")
                 ));
             }
         }
@@ -272,7 +272,7 @@ public class MapMetadataRepository {
                     ps.setInt(7, delayMs);
                     ps.executeUpdate();
                     try (ResultSet rs = ps.getGeneratedKeys()) {
-                        if (rs.next()) return new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs, 0);
+                        if (rs.next()) return new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs);
                         else throw new SQLException("Failed to retrieve auto-generated ID.");
                     }
                 }
@@ -297,7 +297,7 @@ public class MapMetadataRepository {
                 if (rs.next()) return Optional.of(new MapMetadata(
                         rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
                         rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
-                        rs.getInt("total_frames"), rs.getInt("delay_ms"), rs.getInt("rotation_degrees")
+                        rs.getInt("total_frames"), rs.getInt("delay_ms")
                 ));
             }
         }
@@ -315,7 +315,7 @@ public class MapMetadataRepository {
                 if (rs.next()) return Optional.of(new MapMetadata(
                         rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
                         rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
-                        rs.getInt("total_frames"), rs.getInt("delay_ms"), rs.getInt("rotation_degrees")
+                        rs.getInt("total_frames"), rs.getInt("delay_ms")
                 ));
             }
         }
@@ -340,17 +340,6 @@ public class MapMetadataRepository {
             String sql = "DELETE FROM emage_metadata WHERE sync_group_id = ?";
             try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
                 ps.setInt(1, syncGroupId);
-                ps.executeUpdate();
-            }
-        });
-    }
-
-    public void updateRotationDegrees(int syncGroupId, int rotationDegrees) throws SQLException {
-        executeWrite(() -> {
-            String sql = "UPDATE emage_metadata SET rotation_degrees = ? WHERE sync_group_id = ?";
-            try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
-                ps.setInt(1, rotationDegrees);
-                ps.setInt(2, syncGroupId);
                 ps.executeUpdate();
             }
         });
