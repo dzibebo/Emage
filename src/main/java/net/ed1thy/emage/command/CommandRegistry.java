@@ -666,7 +666,7 @@ public class CommandRegistry {
                         MapMetadata meta = repository.createSyncGroup(player.getUniqueId(), url, fileHash, finalColumns, finalRows, totalFrames, delayMs);
                         List<Integer> mapIds = repository.allocateVirtualMapIds(meta.syncGroupID(), finalColumns * finalRows);
 
-                        pipeline.processStreamAsync(provider, meta.syncGroupID(), mapIds, finalColumns, finalRows, progress -> {
+                        pipeline.processStreamAsync(provider, meta.syncGroupID(), mapIds, finalColumns, finalRows, 0, progress -> {
                             int percent = (int) Math.round(progress * 100);
                             messageManager.sendActionBar(player, "<color:#4CABBB>Processing Frames: <white>" + percent + "%</white></color>");
                         }).whenComplete((baseFrame, err) -> {
@@ -710,6 +710,7 @@ public class CommandRegistry {
 
         int mapId = clickedFrame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
 
+        // Collect frames synchronously, then go async for re-render
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
                 Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(mapId);
@@ -725,29 +726,98 @@ public class CommandRegistry {
                     return;
                 }
 
+                // Compute new rotation (accumulate +45°, wrap at 360)
+                int newRotation = (meta.rotationDegrees() + 45) % 360;
+
                 List<Integer> groupMapIds = repository.getMapIdsForGroup(meta.syncGroupID());
 
+                // Collect frames on main thread, then immediately go async
+                final List<ItemFrame> wallFrames = new java.util.concurrent.CopyOnWriteArrayList<>();
+                java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
                 Bukkit.getScheduler().runTask(plugin, () -> {
-                    List<ItemFrame> wallFrames = findContiguousEmageFrames(clickedFrame, groupMapIds);
-
-                    for (ItemFrame f : wallFrames) {
-                        // Advance rotation by one step (45°). All 8 values of org.bukkit.Rotation
-                        // are: NONE, CLOCKWISE_45, CLOCKWISE, CLOCKWISE_135,
-                        //       FLIPPED, FLIPPED_45, COUNTER_CLOCKWISE, COUNTER_CLOCKWISE_45
-                        // setRotation() sends entity-metadata update to all players in range automatically.
-                        org.bukkit.Rotation current = f.getRotation();
-                        org.bukkit.Rotation next = org.bukkit.Rotation.values()[(current.ordinal() + 1) % org.bukkit.Rotation.values().length];
-                        f.setRotation(next);
+                    try {
+                        wallFrames.addAll(findContiguousEmageFrames(clickedFrame, groupMapIds));
+                        // Show loading spinner
+                        for (ItemFrame f : wallFrames) {
+                            f.setItem(new ItemStack(Material.CLOCK));
+                            f.setGlowing(true);
+                        }
+                        messageManager.sendActionBar(player, "<color:#4CABBB>Rotating...</color>");
+                    } finally {
+                        latch.countDown();
                     }
-
-                    // Reset SyncGroup so all players get a fresh map-data packet with the new rotation.
-                    SyncGroup group = renderManager.getSyncGroup(meta.syncGroupID());
-                    if (group != null) {
-                        group.resetInitialized();
-                    }
-
-                    messageManager.sendRotated(player);
                 });
+                latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
+
+                if (wallFrames.isEmpty()) return;
+
+                // Download the image and re-render with new rotation
+                imageDownloader.downloadImageStream(meta.sourceUrl()).whenComplete((inputStream, throwable) -> {
+                    if (throwable != null) {
+                        Bukkit.getScheduler().runTask(plugin, () -> revertLoadingSpinner(wallFrames));
+                        messageManager.sendError(player, getFriendlyErrorMessage(throwable));
+                        return;
+                    }
+
+                    CompletableFuture.runAsync(() -> {
+                        try {
+                            byte[] imageBytes = inputStream.readAllBytes();
+                            closeStreamQuietly(inputStream);
+
+                            boolean isGif = imageBytes.length > 3 && imageBytes[0] == 'G' && imageBytes[1] == 'I' && imageBytes[2] == 'F';
+                            net.ed1thy.emage.processing.ImageFrameProvider provider;
+                            if (isGif) {
+                                net.ed1thy.emage.processing.GifDecoder gifDecoder = new net.ed1thy.emage.processing.GifDecoder();
+                                gifDecoder.read(imageBytes);
+                                provider = gifDecoder;
+                            } else {
+                                javax.imageio.ImageIO.setUseCache(false);
+                                java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(new ByteArrayInputStream(imageBytes));
+                                if (img == null) {
+                                    Bukkit.getScheduler().runTask(plugin, () -> revertLoadingSpinner(wallFrames));
+                                    messageManager.sendError(player, "Unsupported image format.");
+                                    return;
+                                }
+                                provider = new net.ed1thy.emage.processing.StaticImageProvider(img);
+                            }
+
+                            // Delete old frame data and re-render with new rotation
+                            flatFileStorage.deleteSyncGroup(meta.syncGroupID());
+
+                            pipeline.processStreamAsync(provider, meta.syncGroupID(), groupMapIds,
+                                    meta.columns(), meta.rows(), newRotation, progress -> {
+                                        int pct = (int) Math.round(progress * 100);
+                                        messageManager.sendActionBar(player, "<color:#4CABBB>Rotating: <white>" + pct + "%</white></color>");
+                                    }).whenComplete((baseFrame, err) -> {
+                                if (err != null) {
+                                    plugin.getLogger().warning("Rotate re-render failed: " + err.getMessage());
+                                    Bukkit.getScheduler().runTask(plugin, () -> revertLoadingSpinner(wallFrames));
+                                    messageManager.sendError(player, err.getMessage());
+                                    return;
+                                }
+
+                                // Persist new rotation value
+                                try { repository.updateRotationDegrees(meta.syncGroupID(), newRotation); } catch (Exception ignored) {}
+
+                                // Re-apply frames on main thread (same as finalizeFrameApplication but reusing existing frames/mapIds)
+                                Bukkit.getScheduler().runTask(plugin, () -> {
+                                    finalizeFrameApplication(player, wallFrames, meta, groupMapIds,
+                                            meta.columns(), meta.rows(), baseFrame, () -> {});
+                                    messageManager.sendRotated(player);
+
+                                    // Force SyncGroup re-init so all clients refresh
+                                    SyncGroup group = renderManager.getSyncGroup(meta.syncGroupID());
+                                    if (group != null) group.resetInitialized();
+                                });
+                            });
+
+                        } catch (Exception e) {
+                            Bukkit.getScheduler().runTask(plugin, () -> revertLoadingSpinner(wallFrames));
+                            messageManager.sendError(player, e.getMessage());
+                        }
+                    }, vtExecutor);
+                });
+
             } catch (Exception e) {
                 plugin.getLogger().warning("Failed rotate: " + e.getMessage());
             }

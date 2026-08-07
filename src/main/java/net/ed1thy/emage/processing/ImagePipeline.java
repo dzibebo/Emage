@@ -49,7 +49,7 @@ public class ImagePipeline {
 
     public CompletableFuture<Map<Integer, MapFrameUpdate>> processStreamAsync(
             @NotNull ImageFrameProvider decoder, int syncGroupId, @NotNull List<Integer> virtualMapIds, int columns, int rows,
-            @Nullable Consumer<Double> progressCallback) {
+            int rotationDegrees, @Nullable Consumer<Double> progressCallback) {
 
         return CompletableFuture.supplyAsync(() -> {
             Map<Integer, MapFrameUpdate> firstFrameMap = new HashMap<>();
@@ -63,6 +63,14 @@ public class ImagePipeline {
                 int totalWidth = columns * 128;
                 int totalHeight = rows * 128;
 
+                // Determine output canvas size after rotation
+                double radians = Math.toRadians(rotationDegrees);
+                double cos = Math.abs(Math.cos(radians));
+                double sin = Math.abs(Math.sin(radians));
+                int rotatedWidth  = (int) Math.round(totalWidth * cos + totalHeight * sin);
+                int rotatedHeight = (int) Math.round(totalWidth * sin + totalHeight * cos);
+
+                // We always render into a (totalWidth x totalHeight) canvas, then rotate and crop to same size
                 BufferedImage scaledImage = new BufferedImage(totalWidth, totalHeight, BufferedImage.TYPE_INT_ARGB);
                 Graphics2D gFinal = scaledImage.createGraphics();
                 gFinal.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
@@ -102,7 +110,30 @@ public class ImagePipeline {
 
                     gFinal.drawImage(rawImage, 0, 0, totalWidth, totalHeight, null);
 
-                    scaledImage.getRGB(0, 0, totalWidth, totalHeight, argbPixels, 0, totalWidth);
+                    // Apply rotation if needed: rotate the full image, then crop back to totalWidth x totalHeight
+                    BufferedImage processImage;
+                    if (rotationDegrees % 360 != 0) {
+                        BufferedImage rotCanvas = new BufferedImage(rotatedWidth, rotatedHeight, BufferedImage.TYPE_INT_ARGB);
+                        Graphics2D gr = rotCanvas.createGraphics();
+                        gr.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                        gr.translate(rotatedWidth / 2.0, rotatedHeight / 2.0);
+                        gr.rotate(radians);
+                        gr.translate(-totalWidth / 2.0, -totalHeight / 2.0);
+                        gr.drawImage(scaledImage, 0, 0, null);
+                        gr.dispose();
+                        // Crop center to totalWidth x totalHeight
+                        int cropX = Math.max(0, (rotatedWidth - totalWidth) / 2);
+                        int cropY = Math.max(0, (rotatedHeight - totalHeight) / 2);
+                        processImage = new BufferedImage(totalWidth, totalHeight, BufferedImage.TYPE_INT_ARGB);
+                        Graphics2D gc = processImage.createGraphics();
+                        gc.drawImage(rotCanvas, 0, 0, totalWidth, totalHeight,
+                                cropX, cropY, cropX + totalWidth, cropY + totalHeight, null);
+                        gc.dispose();
+                    } else {
+                        processImage = scaledImage;
+                    }
+
+                    processImage.getRGB(0, 0, totalWidth, totalHeight, argbPixels, 0, totalWidth);
                     dither.applyDither(argbPixels, totalWidth, totalHeight, lut, ditheredColors);
 
                     final boolean firstFrame = (frameIndex == 0);
