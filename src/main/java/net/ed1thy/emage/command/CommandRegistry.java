@@ -136,6 +136,16 @@ public class CommandRegistry {
                 })
         );
 
+        commandManager.command(builder.literal("rotate")
+                .handler(ctx -> {
+                    if (!(ctx.sender().getSender() instanceof Player player)) {
+                        messageManager.sendOnlyPlayers(ctx.sender().getSender());
+                        return;
+                    }
+                    Bukkit.getScheduler().runTask(plugin, () -> handleRotateSync(player));
+                })
+        );
+
         commandManager.command(builder.literal("reload")
                 .permission("emage.admin")
                 .handler(ctx -> {
@@ -683,6 +693,72 @@ public class CommandRegistry {
                     }
                 }, vtExecutor);
             });
+        });
+    }
+
+    private void handleRotateSync(Player player) {
+        Entity target = player.getTargetEntity(10);
+        if (!(target instanceof ItemFrame clickedFrame)) {
+            messageManager.sendNoFrame(player);
+            return;
+        }
+
+        if (!clickedFrame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
+            messageManager.sendNotEmageFrame(player);
+            return;
+        }
+
+        int mapId = clickedFrame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
+
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(mapId);
+                if (metaOpt.isEmpty()) {
+                    Bukkit.getScheduler().runTask(plugin, () -> messageManager.sendMetadataNotFound(player));
+                    return;
+                }
+
+                MapMetadata meta = metaOpt.get();
+
+                if (!player.hasPermission("emage.admin") && !player.getUniqueId().equals(meta.creatorUUID())) {
+                    Bukkit.getScheduler().runTask(plugin, () -> messageManager.sendNoPermission(player));
+                    return;
+                }
+
+                List<Integer> groupMapIds = repository.getMapIdsForGroup(meta.syncGroupID());
+
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    List<ItemFrame> wallFrames = findContiguousEmageFrames(clickedFrame, groupMapIds);
+
+                    for (ItemFrame f : wallFrames) {
+                        // Each right-click rotation in Minecraft advances by one step (45°).
+                        // org.bukkit.Rotation has 8 values: NONE, CLOCKWISE_45, CLOCKWISE, CLOCKWISE_135,
+                        // FLIPPED, FLIPPED_45, COUNTER_CLOCKWISE, COUNTER_CLOCKWISE_45
+                        org.bukkit.Rotation current = f.getRotation();
+                        org.bukkit.Rotation next = org.bukkit.Rotation.values()[(current.ordinal() + 1) % org.bukkit.Rotation.values().length];
+                        f.setRotation(next);
+
+                        // Update packets for all online players tracking this frame
+                        SyncGroup group = renderManager.getSyncGroup(meta.syncGroupID());
+                        if (group != null) {
+                            group.getNodes().stream()
+                                    .filter(node -> node.getFrameUUID().equals(f.getUniqueId()))
+                                    .findFirst()
+                                    .ifPresent(node -> {
+                                        for (org.bukkit.entity.Player p : f.getWorld().getPlayers()) {
+                                            com.github.retrooper.packetevents.protocol.player.User u =
+                                                    com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().getUser(p);
+                                            if (u != null) packetSender.spoofItemFrameMap(u, node);
+                                        }
+                                    });
+                        }
+                    }
+
+                    messageManager.sendRotated(player);
+                });
+            } catch (Exception e) {
+                plugin.getLogger().warning("Failed rotate: " + e.getMessage());
+            }
         });
     }
 
