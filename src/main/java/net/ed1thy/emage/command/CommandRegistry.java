@@ -733,10 +733,27 @@ public class CommandRegistry {
 
                 // Collect frames on main thread, then immediately go async
                 final List<ItemFrame> wallFrames = new java.util.concurrent.CopyOnWriteArrayList<>();
+                final List<ItemFrame> orderedFrames = new java.util.concurrent.CopyOnWriteArrayList<>();
                 java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     try {
-                        wallFrames.addAll(findContiguousEmageFrames(clickedFrame, groupMapIds));
+                        List<ItemFrame> bfsFrames = findContiguousEmageFrames(clickedFrame, groupMapIds);
+                        wallFrames.addAll(bfsFrames);
+
+                        // Get frames in proper grid order so tile assignment matches mapIds order
+                        Set<UUID> validUuids = bfsFrames.stream().map(Entity::getUniqueId).collect(Collectors.toSet());
+                        try {
+                            GridUtil.GridData gridData = GridUtil.detectGrid(clickedFrame, meta.columns(), meta.rows(),
+                                    configManager.maxImageGridSize, f -> validUuids.contains(f.getUniqueId()));
+                            if (gridData != null && gridData.frames().size() == bfsFrames.size()) {
+                                orderedFrames.addAll(gridData.frames());
+                            } else {
+                                orderedFrames.addAll(bfsFrames); // fallback
+                            }
+                        } catch (Exception ignored) {
+                            orderedFrames.addAll(bfsFrames); // fallback
+                        }
+
                         // Show loading spinner
                         for (ItemFrame f : wallFrames) {
                             f.setItem(new ItemStack(Material.CLOCK));
@@ -799,9 +816,9 @@ public class CommandRegistry {
                                 // Persist new rotation value
                                 try { repository.updateRotationDegrees(meta.syncGroupID(), newRotation); } catch (Exception ignored) {}
 
-                                // Re-apply frames on main thread (same as finalizeFrameApplication but reusing existing frames/mapIds)
+                                // Re-apply using ORDERED frames so tile[i] goes to correct frame position
                                 Bukkit.getScheduler().runTask(plugin, () -> {
-                                    finalizeFrameApplication(player, wallFrames, meta, groupMapIds,
+                                    finalizeFrameApplication(player, orderedFrames, meta, groupMapIds,
                                             meta.columns(), meta.rows(), baseFrame, () -> {});
                                     messageManager.sendRotated(player);
 
