@@ -19,10 +19,12 @@ import org.jetbrains.annotations.NotNull;
 public class FrameInteractListener implements Listener {
 
     private final NamespacedKey emageKey;
+    private final NamespacedKey loadingKey;
     private final MessageManager messageManager;
 
     public FrameInteractListener(@NotNull Emage plugin, @NotNull MessageManager messageManager) {
         this.emageKey = new NamespacedKey(plugin, "emage_map_id");
+        this.loadingKey = new NamespacedKey(plugin, "emage_loading");
         this.messageManager = messageManager;
     }
 
@@ -31,10 +33,20 @@ public class FrameInteractListener implements Listener {
         return emageKey;
     }
 
+    @NotNull
+    public NamespacedKey getLoadingKey() {
+        return loadingKey;
+    }
+
+    private boolean isProtected(ItemFrame frame) {
+        return frame.getPersistentDataContainer().has(emageKey, PersistentDataType.INTEGER)
+                || frame.getPersistentDataContainer().has(loadingKey, PersistentDataType.BYTE);
+    }
+
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onFrameInteract(PlayerInteractEntityEvent event) {
         if (event.getRightClicked() instanceof ItemFrame frame) {
-            if (frame.getPersistentDataContainer().has(emageKey, PersistentDataType.INTEGER)) {
+            if (isProtected(frame)) {
                 event.setCancelled(true);
                 messageManager.sendProtectedFrame(event.getPlayer());
             }
@@ -44,7 +56,7 @@ public class FrameInteractListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onFrameDamageByEntity(EntityDamageByEntityEvent event) {
         if (event.getEntity() instanceof ItemFrame frame) {
-            if (frame.getPersistentDataContainer().has(emageKey, PersistentDataType.INTEGER)) {
+            if (isProtected(frame)) {
                 event.setCancelled(true);
 
                 if (event.getDamager() instanceof Player player) {
@@ -59,7 +71,7 @@ public class FrameInteractListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onFrameDamage(EntityDamageEvent event) {
         if (event.getEntity() instanceof ItemFrame frame) {
-            if (frame.getPersistentDataContainer().has(emageKey, PersistentDataType.INTEGER)) {
+            if (isProtected(frame)) {
                 event.setCancelled(true);
             }
         }
@@ -68,7 +80,7 @@ public class FrameInteractListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onHangingBreak(HangingBreakEvent event) {
         if (event.getEntity() instanceof ItemFrame frame) {
-            if (frame.getPersistentDataContainer().has(emageKey, PersistentDataType.INTEGER)) {
+            if (isProtected(frame)) {
                 event.setCancelled(true);
             }
         }

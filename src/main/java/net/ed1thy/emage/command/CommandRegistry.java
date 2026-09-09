@@ -404,6 +404,7 @@ public class CommandRegistry {
         Bukkit.getScheduler().runTask(plugin, () -> {
             for (ItemFrame frame : frames) {
                 frame.setGlowing(false);
+                frame.getPersistentDataContainer().remove(interactListener.getLoadingKey());
                 if (frame.getItem().getType() == Material.CLOCK) {
                     frame.setItem(new ItemStack(Material.AIR));
                 }
@@ -443,6 +444,7 @@ public class CommandRegistry {
                 currentFrame.setRotation(bukkitRotation);
                 currentFrame.setVisible(false);
                 currentFrame.setGlowing(false);
+                currentFrame.getPersistentDataContainer().remove(interactListener.getLoadingKey());
                 currentFrame.getPersistentDataContainer().set(interactListener.getEmageKey(), PersistentDataType.INTEGER, mapId);
 
                 ItemStack bukkitMap = new ItemStack(Material.FILLED_MAP);
@@ -539,6 +541,7 @@ public class CommandRegistry {
             for (ItemFrame frame : gridFrames) {
                 frame.setItem(new ItemStack(Material.CLOCK));
                 frame.setGlowing(true);
+                frame.getPersistentDataContainer().set(interactListener.getLoadingKey(), PersistentDataType.BYTE, (byte) 1);
             }
 
             messageManager.sendProcessing(player, finalColumns, finalRows);
