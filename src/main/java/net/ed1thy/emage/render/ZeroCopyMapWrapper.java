@@ -20,11 +20,13 @@ public class ZeroCopyMapWrapper extends PacketWrapper<ZeroCopyMapWrapper> {
 
     @Override
     public void write() {
-        ByteBuf nettyBuf = (ByteBuf) getBuffer();
         ByteBuf deltaBuf = delta.packetBuf();
-        if (deltaBuf != null && deltaBuf.refCnt() > 0) {
+        if (deltaBuf != null && deltaBuf.refCnt() > 0 && deltaBuf.readableBytes() > 0) {
+            ByteBuf nettyBuf = (ByteBuf) getBuffer();
             nettyBuf.writeBytes(deltaBuf, deltaBuf.readerIndex(), deltaBuf.readableBytes());
             delta.freeMemory();
+        } else {
+            throw new IllegalStateException("Attempted to encode empty or freed map packet for mapId: " + delta.mapId());
         }
     }
 

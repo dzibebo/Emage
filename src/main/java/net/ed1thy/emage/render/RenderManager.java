@@ -14,6 +14,7 @@ import net.ed1thy.emage.model.MapFrameUpdate;
 import org.bukkit.Bukkit;
 import org.bukkit.scheduler.BukkitTask;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.Iterator;
 import java.util.Map;
@@ -137,9 +138,14 @@ public class RenderManager {
                     int pktSize = 8192;
                     if (packet instanceof ZeroCopyMapWrapper mapPacket) {
                         ByteBuf buf = mapPacket.getDelta().packetBuf();
-                        if (buf != null && buf.refCnt() > 0) {
-                            pktSize = buf.readableBytes() + 16;
+                        if (buf == null || buf.refCnt() <= 0 || buf.readableBytes() <= 0) {
+                            queue.poll();
+                            if (buf != null && buf.refCnt() > 0) {
+                                mapPacket.getDelta().freeMemory();
+                            }
+                            continue;
                         }
+                        pktSize = buf.readableBytes() + 16;
                     }
 
                     if (sentBytes + pktSize > MAX_BYTES_PER_PLAYER_PER_TICK && sentBytes > 0) {
@@ -164,7 +170,8 @@ public class RenderManager {
         }
     }
 
-    public void enqueuePacket(@NotNull UUID uuid, @NotNull PacketWrapper<?> packet) {
+    public void enqueuePacket(@NotNull UUID uuid, @Nullable PacketWrapper<?> packet) {
+        if (packet == null) return;
         User user = chunkViewerTracker.getUser(uuid);
         if (user == null) {
             if (packet instanceof ZeroCopyMapWrapper mapPacket) {
@@ -173,6 +180,40 @@ public class RenderManager {
             return;
         }
         userPacketQueues.computeIfAbsent(user, k -> new ConcurrentLinkedQueue<>()).add(packet);
+    }
+
+    public void clearQueue(@NotNull UUID uuid) {
+        User user = chunkViewerTracker.getUser(uuid);
+        if (user != null) {
+            Queue<PacketWrapper<?>> queue = userPacketQueues.remove(user);
+            if (queue != null) {
+                PacketWrapper<?> dropped;
+                while ((dropped = queue.poll()) != null) {
+                    if (dropped instanceof ZeroCopyMapWrapper mapPacket) {
+                        mapPacket.getDelta().freeMemory();
+                    }
+                }
+            }
+        }
+    }
+
+    public void reset() {
+        for (SyncGroup group : activeGroups.values()) {
+            group.cleanup();
+        }
+        activeGroups.clear();
+        pendingSpoofs.clear();
+
+        for (Queue<PacketWrapper<?>> queue : userPacketQueues.values()) {
+            PacketWrapper<?> packet;
+            while ((packet = queue.poll()) != null) {
+                if (packet instanceof ZeroCopyMapWrapper mapPacket) {
+                    mapPacket.getDelta().freeMemory();
+                }
+            }
+        }
+        userPacketQueues.clear();
+        globalFrameCache.invalidateAll();
     }
 
     public void queueSpoof(@NotNull User user, @NotNull FrameNode node) {

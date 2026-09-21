@@ -40,13 +40,21 @@ public class ChunkTrackerListener implements Listener {
     }
 
     public void removeNodeFromCache(@NotNull FrameNode node) {
-        List<FrameNode> nodes = chunkNodeCache.get(node.getChunkKey());
+        removeNodeFromCache(node.getFrameUUID(), node.getChunkKey());
+    }
+
+    public void removeNodeFromCache(@NotNull UUID frameUuid, long chunkKey) {
+        List<FrameNode> nodes = chunkNodeCache.get(chunkKey);
         if (nodes != null) {
-            nodes.remove(node);
+            nodes.removeIf(n -> n.getFrameUUID().equals(frameUuid));
             if (nodes.isEmpty()) {
-                chunkNodeCache.remove(node.getChunkKey());
+                chunkNodeCache.remove(chunkKey);
             }
         }
+    }
+
+    public void clearCache() {
+        chunkNodeCache.clear();
     }
 
     @EventHandler(priority = EventPriority.MONITOR)

@@ -128,7 +128,7 @@ public class PersistenceListener implements Listener {
                     Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(mapId);
 
                     Bukkit.getScheduler().runTask(plugin, () -> {
-                        if (metaOpt.isPresent()) {
+                        if (metaOpt.isPresent() && flatFileStorage.groupExists(metaOpt.get().syncGroupID())) {
                             MapMetadata meta = metaOpt.get();
                             SyncGroup group = renderManager.getSyncGroup(meta.syncGroupID());
 
@@ -149,8 +149,13 @@ public class PersistenceListener implements Listener {
                             }
                         } else {
                             frame.getPersistentDataContainer().remove(interactListener.getEmageKey());
+                            frame.getPersistentDataContainer().remove(interactListener.getLoadingKey());
                             frame.setItem(new ItemStack(Material.AIR));
                             frame.setVisible(true);
+                            chunkTrackerListener.removeNodeFromCache(node.getFrameUUID(), node.getChunkKey());
+                            try {
+                                repository.removePlacedFrameByUUID(frame.getUniqueId());
+                            } catch (Exception ignored) {}
                         }
                     });
                 }

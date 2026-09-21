@@ -143,74 +143,150 @@ public class CommandRegistry {
                     messageManager.load();
                     messageManager.sendConfigReloaded(ctx.sender().getSender());
 
-                    // Fix chunk ban: scan all loaded chunks for orphaned DB entries
-                    // (item frames removed manually without /emage remove)
+                    // Fix chunk ban and resync all active frames/groups
                     Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
                         try {
-                            int fixedGroups = 0;
+                            // Step 1: Collect all item frames in all loaded chunks
+                            record FrameInspection(ItemFrame frame, Integer mapId, boolean hasLoading) {}
+                            final List<FrameInspection> inspectedFrames = new ArrayList<>();
+                            final Map<UUID, Set<Long>> loadedChunkKeysByWorld = new HashMap<>();
 
-                            // Collect all emage frame UUIDs actually present in loaded chunks
-                            // Must be done on main thread first
-                            final java.util.Map<UUID, Integer> loadedFrameMapIds = new java.util.HashMap<>();
                             try {
-                                java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+                                CountDownLatch latch = new CountDownLatch(1);
                                 Bukkit.getScheduler().runTask(plugin, () -> {
                                     try {
                                         for (org.bukkit.World world : Bukkit.getWorlds()) {
+                                            Set<Long> cKeys = new HashSet<>();
                                             for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
+                                                cKeys.add(chunk.getChunkKey());
                                                 for (Entity entity : chunk.getEntities()) {
                                                     if (entity instanceof ItemFrame frame) {
-                                                        if (frame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
-                                                            Integer mapId = frame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
-                                                            if (mapId != null) {
-                                                                loadedFrameMapIds.put(frame.getUniqueId(), mapId);
-                                                            }
+                                                        boolean hasEmage = frame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER);
+                                                        boolean hasLoading = frame.getPersistentDataContainer().has(interactListener.getLoadingKey(), PersistentDataType.BYTE);
+                                                        if (hasEmage || hasLoading) {
+                                                            Integer mapId = hasEmage ? frame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER) : null;
+                                                            inspectedFrames.add(new FrameInspection(frame, mapId, hasLoading));
                                                         }
                                                     }
                                                 }
                                             }
+                                            loadedChunkKeysByWorld.put(world.getUID(), cKeys);
                                         }
                                     } finally {
                                         latch.countDown();
                                     }
                                 });
-                                latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                                latch.await(5, TimeUnit.SECONDS);
                             } catch (InterruptedException e) {
                                 Thread.currentThread().interrupt();
                                 return;
                             }
 
-                            // Compare DB records vs actual loaded world state.
-                            // Frames in DB but missing from all loaded chunks = broken by hand → remove.
-                            java.util.Set<Integer> allGroupIds = repository.getAllSyncGroupIDs();
-                            for (int groupId : allGroupIds) {
-                                List<UUID> dbFrameUuids = repository.getPlacedFrameUUIDsForGroup(groupId);
-                                boolean removedAny = false;
+                            // Step 2: Validate each inspected frame against DB and flat files
+                            final List<ItemFrame> brokenFramesToFix = new ArrayList<>();
+                            final Map<Integer, List<ItemFrame>> validFramesByGroup = new HashMap<>();
+                            final Map<Integer, MapMetadata> metaByGroup = new HashMap<>();
 
-                                for (UUID frameUuid : dbFrameUuids) {
-                                    if (!loadedFrameMapIds.containsKey(frameUuid)) {
-                                        // Frame UUID is in DB but not present in any loaded chunk.
-                                        // It was manually broken → safe to remove from DB.
-                                        repository.removePlacedFrameByUUID(frameUuid);
-                                        removedAny = true;
+                            for (FrameInspection fi : inspectedFrames) {
+                                ItemFrame frame = fi.frame();
+                                if (fi.hasLoading() && activeProcessingTasks.get() == 0) {
+                                    brokenFramesToFix.add(frame);
+                                    continue;
+                                }
+
+                                if (fi.mapId() != null) {
+                                    Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(fi.mapId());
+                                    if (metaOpt.isPresent() && flatFileStorage.groupExists(metaOpt.get().syncGroupID())) {
+                                        MapMetadata meta = metaOpt.get();
+                                        validFramesByGroup.computeIfAbsent(meta.syncGroupID(), k -> new ArrayList<>()).add(frame);
+                                        metaByGroup.putIfAbsent(meta.syncGroupID(), meta);
+                                    } else {
+                                        brokenFramesToFix.add(frame);
+                                    }
+                                }
+                            }
+
+                            // Step 3: Check DB placed frames ONLY in chunks that are currently LOADED
+                            int cleanedDbFrames = 0;
+                            Set<UUID> presentUuids = inspectedFrames.stream()
+                                    .map(f -> f.frame().getUniqueId())
+                                    .collect(Collectors.toSet());
+                            for (Map.Entry<UUID, Set<Long>> entry : loadedChunkKeysByWorld.entrySet()) {
+                                UUID worldUid = entry.getKey();
+                                for (long chunkKey : entry.getValue()) {
+                                    int cx = (int) chunkKey;
+                                    int cz = (int) (chunkKey >> 32);
+                                    List<UUID> dbUuids = repository.getPlacedFramesInChunk(worldUid, cx, cz);
+                                    if (!dbUuids.isEmpty()) {
+                                        for (UUID dbUuid : dbUuids) {
+                                            if (!presentUuids.contains(dbUuid)) {
+                                                repository.removePlacedFrameByUUID(dbUuid);
+                                                cleanedDbFrames++;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Step 4: On main thread, fix broken frames, purge render manager & caches, resync valid frames
+                            final int fixedCount = brokenFramesToFix.size();
+                            final int finalCleanedDb = cleanedDbFrames;
+                            Bukkit.getScheduler().runTask(plugin, () -> {
+                                for (ItemFrame frame : brokenFramesToFix) {
+                                    frame.getPersistentDataContainer().remove(interactListener.getEmageKey());
+                                    frame.getPersistentDataContainer().remove(interactListener.getLoadingKey());
+                                    if (frame.getItem().getType() == Material.CLOCK || frame.getItem().getType() == Material.FILLED_MAP) {
+                                        frame.setItem(new ItemStack(Material.AIR));
+                                    }
+                                    frame.setVisible(true);
+                                    frame.setGlowing(false);
+                                    chunkTrackerListener.removeNodeFromCache(frame.getUniqueId(), frame.getLocation().getChunk().getChunkKey());
+                                }
+
+                                renderManager.reset();
+                                chunkTrackerListener.clearCache();
+
+                                int restoredGroups = 0;
+                                for (Map.Entry<Integer, List<ItemFrame>> groupEntry : validFramesByGroup.entrySet()) {
+                                    int groupId = groupEntry.getKey();
+                                    MapMetadata meta = metaByGroup.get(groupId);
+                                    List<ItemFrame> frames = groupEntry.getValue();
+                                    if (meta == null || frames.isEmpty()) continue;
+
+                                    List<FrameNode> nodes = new ArrayList<>();
+                                    for (ItemFrame frame : frames) {
+                                        Integer mapId = frame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
+                                        if (mapId == null) continue;
+
+                                        ItemStack bukkitMap = new ItemStack(Material.FILLED_MAP);
+                                        if (bukkitMap.getItemMeta() instanceof MapMeta mapMeta) {
+                                            mapMeta.setMapId(mapId);
+                                            bukkitMap.setItemMeta(mapMeta);
+                                        }
+                                        com.github.retrooper.packetevents.protocol.item.ItemStack peItem = SpigotConversionUtil.fromBukkitItemStack(bukkitMap);
+
+                                        FrameNode node = new FrameNode(frame.getEntityId(), frame.getUniqueId(), frame.getWorld().getUID(),
+                                                frame.getLocation().getChunk().getX(), frame.getLocation().getChunk().getZ(),
+                                                frame.getLocation().getBlockX(), frame.getLocation().getBlockY(), frame.getLocation().getBlockZ(),
+                                                mapId, peItem);
+                                        chunkTrackerListener.addNodeToCache(node);
+                                        nodes.add(node);
+                                    }
+
+                                    if (!nodes.isEmpty()) {
+                                        SyncGroup group = new SyncGroup(meta, new CopyOnWriteArrayList<>(nodes), flatFileStorage, renderManager.getGlobalFrameCache(), vtExecutor, null);
+                                        renderManager.registerSyncGroup(groupId, group);
+                                        restoredGroups++;
                                     }
                                 }
 
-                                if (removedAny && repository.countPlacedFrames(groupId) == 0) {
-                                    flatFileStorage.deleteSyncGroup(groupId);
-                                    repository.deleteSyncGroup(groupId);
-                                    final int fGroupId = groupId;
-                                    Bukkit.getScheduler().runTask(plugin, () -> renderManager.unregisterSyncGroup(fGroupId));
-                                    fixedGroups++;
-                                }
-                            }
+                                plugin.getLogger().info("[Emage] Reload / Chunk-ban repair complete: cleaned " + fixedCount
+                                        + " broken frames, removed " + finalCleanedDb + " orphaned DB records, restored "
+                                        + restoredGroups + " active sync groups.");
+                            });
 
-                            if (fixedGroups > 0) {
-                                final int finalFixed = fixedGroups;
-                                plugin.getLogger().info("[Emage] Chunk-ban GC: cleaned up " + finalFixed + " orphaned sync group(s) during reload.");
-                            }
                         } catch (Exception e) {
-                            plugin.getLogger().warning("[Emage] Chunk-ban GC scan failed: " + e.getMessage());
+                            plugin.getLogger().warning("[Emage] Reload chunk-ban scan error: " + e.getMessage());
                         }
                     });
                 })
@@ -321,7 +397,9 @@ public class CommandRegistry {
 
                             GridUtil.GridData gridData;
                             try {
-                                gridData = GridUtil.detectGrid(clickedFrame, inputColumns, inputRows, configManager.maxImageGridSize, f -> wallFrameUuids.contains(f.getUniqueId()));
+                                gridData = GridUtil.detectGrid(clickedFrame, inputColumns, inputRows, configManager.maxImageGridSize,
+                                        f -> wallFrameUuids.contains(f.getUniqueId())
+                                                || (f.getItem().getType() == Material.AIR && !f.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)));
                                 if (gridData == null) {
                                     if (inputColumns == -1) messageManager.sendAutoDetectFailed(player);
                                     else messageManager.sendNotEnoughFrames(player, inputColumns, inputRows);
@@ -336,26 +414,24 @@ public class CommandRegistry {
 
                             for (ItemFrame f : wallFrames) {
                                 f.getPersistentDataContainer().remove(interactListener.getEmageKey());
+                                f.getPersistentDataContainer().remove(interactListener.getLoadingKey());
                                 f.setItem(new ItemStack(Material.AIR));
                                 f.setVisible(true);
 
                                 if (group != null) {
-                                    group.getNodes().removeIf(node -> {
-                                        boolean matches = node.getFrameUUID().equals(f.getUniqueId());
-                                        if (matches) chunkTrackerListener.removeNodeFromCache(node);
-                                        return matches;
-                                    });
+                                    group.getNodes().removeIf(node -> node.getFrameUUID().equals(f.getUniqueId()));
                                 }
+                                chunkTrackerListener.removeNodeFromCache(f.getUniqueId(), f.getLocation().getChunk().getChunkKey());
                             }
+
+                            if (group != null && group.getNodes().isEmpty()) {
+                                renderManager.unregisterSyncGroup(meta.syncGroupID());
+                            }
+                            renderManager.clearQueue(player.getUniqueId());
 
                             Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
                                 try {
                                     repository.removePlacedFrames(wallFrames);
-                                    if (repository.countPlacedFrames(meta.syncGroupID()) == 0) {
-                                        flatFileStorage.deleteSyncGroup(meta.syncGroupID());
-                                        repository.deleteSyncGroup(meta.syncGroupID());
-                                        Bukkit.getScheduler().runTask(plugin, () -> renderManager.unregisterSyncGroup(meta.syncGroupID()));
-                                    }
                                 } catch (Exception e) {
                                     plugin.getLogger().warning("Failed GC cleanup on overwrite: " + e.getMessage());
                                 }
@@ -364,11 +440,25 @@ public class CommandRegistry {
                             startImagePipeline(player, url, gridData);
                         });
                     } else {
-                        Bukkit.getScheduler().runTask(plugin, () -> detectAndStartPipeline(player, url, inputColumns, inputRows, clickedFrame));
+                        Bukkit.getScheduler().runTask(plugin, () -> {
+                            clickedFrame.getPersistentDataContainer().remove(interactListener.getEmageKey());
+                            clickedFrame.getPersistentDataContainer().remove(interactListener.getLoadingKey());
+                            clickedFrame.setItem(new ItemStack(Material.AIR));
+                            clickedFrame.setVisible(true);
+                            chunkTrackerListener.removeNodeFromCache(clickedFrame.getUniqueId(), clickedFrame.getLocation().getChunk().getChunkKey());
+                            detectAndStartPipeline(player, url, inputColumns, inputRows, clickedFrame);
+                        });
                     }
                 } catch (Exception e) {
                     plugin.getLogger().warning("Failed to clean up old grid during overwrite: " + e.getMessage());
-                    Bukkit.getScheduler().runTask(plugin, () -> detectAndStartPipeline(player, url, inputColumns, inputRows, clickedFrame));
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        clickedFrame.getPersistentDataContainer().remove(interactListener.getEmageKey());
+                        clickedFrame.getPersistentDataContainer().remove(interactListener.getLoadingKey());
+                        clickedFrame.setItem(new ItemStack(Material.AIR));
+                        clickedFrame.setVisible(true);
+                        chunkTrackerListener.removeNodeFromCache(clickedFrame.getUniqueId(), clickedFrame.getLocation().getChunk().getChunkKey());
+                        detectAndStartPipeline(player, url, inputColumns, inputRows, clickedFrame);
+                    });
                 }
             });
         } else {
@@ -557,11 +647,12 @@ public class CommandRegistry {
                 if (urlMeta.isPresent() && flatFileStorage.groupExists(urlMeta.get().syncGroupID())) {
                     MapMetadata meta = urlMeta.get();
                     List<Integer> mapIds = repository.getMapIdsForGroup(meta.syncGroupID());
-
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        finalizeFrameApplication(player, gridFrames, meta, mapIds, finalColumns, finalRows, null, decrementTask);
-                    });
-                    return;
+                    if (mapIds.size() == finalColumns * finalRows) {
+                        Bukkit.getScheduler().runTask(plugin, () -> {
+                            finalizeFrameApplication(player, gridFrames, meta, mapIds, finalColumns, finalRows, null, decrementTask);
+                        });
+                        return;
+                    }
                 }
             } catch (Exception e) {
                 plugin.getLogger().warning("Failed to check URL cache: " + e.getMessage());
@@ -597,11 +688,12 @@ public class CommandRegistry {
                         if (existingMeta.isPresent() && flatFileStorage.groupExists(existingMeta.get().syncGroupID())) {
                             MapMetadata meta = existingMeta.get();
                             List<Integer> mapIds = repository.getMapIdsForGroup(meta.syncGroupID());
-
-                            Bukkit.getScheduler().runTask(plugin, () -> {
-                                finalizeFrameApplication(player, gridFrames, meta, mapIds, finalColumns, finalRows, null, decrementTask);
-                            });
-                            return;
+                            if (mapIds.size() == finalColumns * finalRows) {
+                                Bukkit.getScheduler().runTask(plugin, () -> {
+                                    finalizeFrameApplication(player, gridFrames, meta, mapIds, finalColumns, finalRows, null, decrementTask);
+                                });
+                                return;
+                            }
                         }
 
                         javax.imageio.ImageIO.setUseCache(false);
@@ -736,17 +828,20 @@ public class CommandRegistry {
 
                     for (ItemFrame f : wallFrames) {
                         f.getPersistentDataContainer().remove(interactListener.getEmageKey());
+                        f.getPersistentDataContainer().remove(interactListener.getLoadingKey());
                         f.setItem(new ItemStack(Material.AIR));
                         f.setVisible(true);
 
                         if (group != null) {
-                            group.getNodes().removeIf(node -> {
-                                boolean matches = node.getFrameUUID().equals(f.getUniqueId());
-                                if (matches) chunkTrackerListener.removeNodeFromCache(node);
-                                return matches;
-                            });
+                            group.getNodes().removeIf(node -> node.getFrameUUID().equals(f.getUniqueId()));
                         }
+                        chunkTrackerListener.removeNodeFromCache(f.getUniqueId(), f.getLocation().getChunk().getChunkKey());
                     }
+
+                    if (group != null && group.getNodes().isEmpty()) {
+                        renderManager.unregisterSyncGroup(meta.syncGroupID());
+                    }
+                    renderManager.clearQueue(player.getUniqueId());
 
                     messageManager.sendGridRemoved(player);
 
@@ -757,7 +852,6 @@ public class CommandRegistry {
                             if (repository.countPlacedFrames(meta.syncGroupID()) == 0) {
                                 flatFileStorage.deleteSyncGroup(meta.syncGroupID());
                                 repository.deleteSyncGroup(meta.syncGroupID());
-                                Bukkit.getScheduler().runTask(plugin, () -> renderManager.unregisterSyncGroup(meta.syncGroupID()));
                             }
                         } catch (Exception e) {
                             plugin.getLogger().warning("Failed to run GC check after remove: " + e.getMessage());

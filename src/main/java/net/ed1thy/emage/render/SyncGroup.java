@@ -60,10 +60,12 @@ public class SyncGroup {
         this.vtExecutor = vtExecutor;
 
         if (preloadedBaseFrames != null) {
-            baseFrames.putAll(preloadedBaseFrames);
             for (Map.Entry<Integer, MapFrameUpdate> entry : preloadedBaseFrames.entrySet()) {
+                MapFrameUpdate update = entry.getValue();
+                baseFrames.put(entry.getKey(), update);
+                update.retain();
                 long key = (0L << 32) | (entry.getKey() & 0xFFFFFFFFL);
-                frameCache.put(key, entry.getValue());
+                frameCache.put(key, update);
             }
         }
 
@@ -71,7 +73,13 @@ public class SyncGroup {
             try {
                 if (preloadedBaseFrames == null) {
                     Map<Integer, MapFrameUpdate> f0Bundle = flatFileStorage.loadBundledFrame(metadata.syncGroupID(), 0);
-                    baseFrames.putAll(f0Bundle);
+                    for (Map.Entry<Integer, MapFrameUpdate> entry : f0Bundle.entrySet()) {
+                        MapFrameUpdate update = entry.getValue();
+                        baseFrames.put(entry.getKey(), update);
+                        update.retain();
+                        long key = (0L << 32) | (entry.getKey() & 0xFFFFFFFFL);
+                        frameCache.put(key, update);
+                    }
                 }
 
                 frameDelays = flatFileStorage.loadFrameDelays(metadata.syncGroupID());
@@ -245,6 +253,10 @@ public class SyncGroup {
         for (FrameNode node : nodes) {
             long cacheKey = ((long) currentFrameIndex << 32) | (node.getMapID() & 0xFFFFFFFFL);
             MapFrameUpdate update = frameCache.getIfPresent(cacheKey);
+            if (update != null && update.isFreed()) {
+                frameCache.invalidate(cacheKey);
+                update = null;
+            }
 
             if (update != null) {
                 for (UUID uuid : visiblePlayers) {
@@ -252,16 +264,33 @@ public class SyncGroup {
 
                     if (isNewUser && currentFrameIndex != 0) {
                         MapFrameUpdate base = baseFrames.get(node.getMapID());
+                        if (base == null || base.isFreed()) {
+                            try {
+                                Map<Integer, MapFrameUpdate> reloaded = flatFileStorage.loadBundledFrame(metadata.syncGroupID(), 0);
+                                for (Map.Entry<Integer, MapFrameUpdate> entry : reloaded.entrySet()) {
+                                    MapFrameUpdate reloadedUpdate = entry.getValue();
+                                    baseFrames.put(entry.getKey(), reloadedUpdate);
+                                    reloadedUpdate.retain();
+                                }
+                                base = baseFrames.get(node.getMapID());
+                            } catch (Exception ignored) {}
+                        }
                         if (base != null) {
                             for (DeltaFrame subChunk : base.parts()) {
-                                renderManager.enqueuePacket(uuid, sender.createMapPacket(subChunk));
+                                com.github.retrooper.packetevents.wrapper.PacketWrapper<?> pkt = sender.createMapPacket(subChunk);
+                                if (pkt != null) {
+                                    renderManager.enqueuePacket(uuid, pkt);
+                                }
                             }
                         }
                     }
 
                     if (isNewUser || metadata.isAnimated()) {
                         for (DeltaFrame subChunk : update.parts()) {
-                            renderManager.enqueuePacket(uuid, sender.createMapPacket(subChunk));
+                            com.github.retrooper.packetevents.wrapper.PacketWrapper<?> pkt = sender.createMapPacket(subChunk);
+                            if (pkt != null) {
+                                renderManager.enqueuePacket(uuid, pkt);
+                            }
                         }
                     }
                     newlyInitialized.add(uuid);

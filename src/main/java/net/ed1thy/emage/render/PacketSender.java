@@ -10,19 +10,20 @@ import io.netty.buffer.PooledByteBufAllocator;
 import net.ed1thy.emage.model.DeltaFrame;
 import net.ed1thy.emage.model.FrameNode;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.Collections;
 
 public class PacketSender {
 
-    @NotNull
+    @Nullable
     public PacketWrapper<?> createMapPacket(@NotNull DeltaFrame delta) {
         // Create a private copy of the data for this specific player.
         // This avoids the race condition where the shared source buffer
         // gets freed by one player before another player's write() runs.
         ByteBuf src = delta.packetBuf();
-        if (src == null || src.refCnt() <= 0) {
-            return new ZeroCopyMapWrapper(new DeltaFrame(delta.frameIndex(), delta.mapId(), null));
+        if (src == null || src.refCnt() <= 0 || src.readableBytes() <= 0) {
+            return null;
         }
         ByteBuf copy = PooledByteBufAllocator.DEFAULT.directBuffer(src.readableBytes());
         copy.writeBytes(src, src.readerIndex(), src.readableBytes());

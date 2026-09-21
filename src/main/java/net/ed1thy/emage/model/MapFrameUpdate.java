@@ -28,4 +28,19 @@ public final class MapFrameUpdate {
             df.freeMemory();
         }
     }
+
+    public void retain() {
+        for (DeltaFrame df : parts) {
+            df.retain();
+        }
+    }
+
+    public boolean isFreed() {
+        for (DeltaFrame df : parts) {
+            if (df.packetBuf() == null || df.packetBuf().refCnt() <= 0) {
+                return true;
+            }
+        }
+        return false;
+    }
 }

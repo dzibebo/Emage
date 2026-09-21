@@ -44,4 +44,16 @@ public class FrameNode {
     public int getBlockZ() { return blockZ; }
     public int getMapID() { return mapId; }
     @NotNull public com.github.retrooper.packetevents.protocol.item.ItemStack getCachedItem() { return cachedItem; }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof FrameNode frameNode)) return false;
+        return frameUUID.equals(frameNode.frameUUID);
+    }
+
+    @Override
+    public int hashCode() {
+        return frameUUID.hashCode();
+    }
 }

@@ -48,7 +48,7 @@ public class MapMetadataRepository {
 
     public void addPlacedFrames(int syncGroupId, List<ItemFrame> frames) throws SQLException {
         executeWrite(() -> {
-            String sql = "INSERT OR IGNORE INTO emage_placed_frames (frame_uuid, sync_group_id, world_uuid, chunk_x, chunk_z) VALUES (?, ?, ?, ?, ?)";
+            String sql = "INSERT OR REPLACE INTO emage_placed_frames (frame_uuid, sync_group_id, world_uuid, chunk_x, chunk_z) VALUES (?, ?, ?, ?, ?)";
             try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
                 for (ItemFrame frame : frames) {
                     ps.setString(1, frame.getUniqueId().toString());
