@@ -7,11 +7,9 @@ import net.ed1thy.emage.config.MessageManager;
 import net.ed1thy.emage.listener.ChunkTrackerListener;
 import net.ed1thy.emage.listener.FrameInteractListener;
 import net.ed1thy.emage.listener.PersistenceListener;
-import net.ed1thy.emage.listener.UpdateNotifyListener;
 import net.ed1thy.emage.network.ImageDownloader;
 import net.ed1thy.emage.network.DnsResolver;
 import net.ed1thy.emage.network.EHttpClient;
-import net.ed1thy.emage.network.UpdateChecker;
 import net.ed1thy.emage.processing.ColorPalette;
 import net.ed1thy.emage.processing.ImagePipeline;
 import net.ed1thy.emage.render.ChunkViewerTracker;
@@ -133,20 +131,6 @@ public class Emage extends JavaPlugin {
                 interactListener, virtualThreadExecutor
         );
         commandRegistry.registerCommands();
-
-        if (configManager.checkForUpdates) {
-            UpdateChecker updateChecker = new UpdateChecker(this, messageManager);
-
-            getServer().getScheduler().runTaskTimerAsynchronously(this, updateChecker::checkForUpdates, 0L, 20L * 60 * 30);
-
-            getServer().getPluginManager().registerEvents(new UpdateNotifyListener(updateChecker), this);
-        } else {
-            getLogger().warning("=======================================================");
-            getLogger().warning("Update checking is DISABLED in the config.");
-            getLogger().warning("This is NOT recommended. You will not be notified");
-            getLogger().warning("of critical bug fixes or performance improvements!");
-            getLogger().warning("=======================================================");
-        }
 
         getLogger().info("Emage enabled!");
     }

@@ -1,9 +1,3 @@
-updates:
-  # It is NOT RECOMMENDED to turn this off. Running outdated versions
-  # means you miss out on critical security patches, major performance
-  # improvements, and bug fixes.
-  check-for-updates: true
-
 performance:
   max-packets-per-tick: 64
 

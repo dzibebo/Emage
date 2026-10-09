@@ -8,7 +8,6 @@ public class ConfigManager {
 
     private final Emage plugin;
     private FileConfiguration config;
-    public boolean checkForUpdates;
 
     public int maxPacketsPerTick;
 
@@ -45,7 +44,6 @@ public class ConfigManager {
         plugin.saveDefaultConfig();
         plugin.reloadConfig();
         this.config = plugin.getConfig();
-        this.checkForUpdates = config.getBoolean("updates.check-for-updates", true);
 
         this.maxPacketsPerTick = config.getInt("performance.max-packets-per-tick", 64);
 
