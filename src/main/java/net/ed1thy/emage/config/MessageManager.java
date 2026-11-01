@@ -28,7 +28,6 @@ public class MessageManager {
     private Component undoMismatch;
     private Component noPermission;
 
-    private String updateAvailableRaw;
     private String processingStartedRaw;
     private String successRaw;
     private String errorRaw;
@@ -58,7 +57,6 @@ public class MessageManager {
         String rawPrefix = config.getString("messages.prefix", "<b><gradient:#F57E3A:#CB6E38:#C36220>Emage</gradient></b> <dark_gray>•</dark_gray> ");
         this.prefix = miniMessage.deserialize(rawPrefix);
 
-        this.updateAvailableRaw = config.getString("messages.update-available", "<yellow>A new version of <gradient:#F57E3A:#CB6E38:#C36220>Emage</gradient> (<green><version></green>) is available! You are running <red><current_version></red>. Download it here: <click:open_url:'<url>'><aqua><u><url></u></aqua></click>");
         this.noFrame = prefix.append(miniMessage.deserialize(config.getString("messages.no-frame", "<red>You must be looking at an item frame.")));
         this.onlyPlayers = prefix.append(miniMessage.deserialize(config.getString("messages.only-players", "<red>Only players can use this command.")));
         this.maxTasksReached = prefix.append(miniMessage.deserialize(config.getString("messages.max-tasks-reached", "<red>The server is currently processing the maximum number of images allowed. Please wait a moment.")));
@@ -168,14 +166,6 @@ public class MessageManager {
                 .replace("<frames>", String.valueOf(frames));
         audience.sendMessage(prefix.append(miniMessage.deserialize(raw)));
         playSafely(audience, errorSound);
-    }
-
-    public void sendUpdateAvailable(@NotNull Audience audience, @NotNull String currentVersion, @NotNull String newVersion, @NotNull String url) {
-        String raw = updateAvailableRaw
-                .replace("<current_version>", currentVersion)
-                .replace("<version>", newVersion)
-                .replace("<url>", url);
-        audience.sendMessage(miniMessage.deserialize(raw));
     }
 
     public void sendSuccess(@NotNull Audience audience, int totalFrames, int syncGroupId) {

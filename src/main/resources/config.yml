@@ -59,7 +59,6 @@ messages:
   grid-removed: "<green>Grid removed successfully."
   cleanup-failed: "<red>Failed to cleanup files."
   config-reloaded: "<green>Configuration and messages reloaded successfully."
-  update-available: "<yellow>A new version of <gradient:#F57E3A:#CB6E38:#C36220>Emage</gradient> (<green><version></green>) is available! You are running <red><current_version></red>. Download it here: <click:open_url:'<url>'><aqua><u><url></u></aqua></click>"
   protected-frame: "<red>This Emage is protected. Use <color:#f3c6bb>/emage remove</color> to delete it."
   smart-url-hint: "<gray><i>Hint: Ensure you used a direct image link ending in .png, .jpg, or .gif (Not an imgur/discord link!)</i>"
   undo-mismatch: "<red>You are looking at a different Emage render than the one this Undo was for."

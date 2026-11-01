@@ -18,9 +18,6 @@ public class PacketSender {
 
     @Nullable
     public PacketWrapper<?> createMapPacket(@NotNull DeltaFrame delta) {
-        // Create a private copy of the data for this specific player.
-        // This avoids the race condition where the shared source buffer
-        // gets freed by one player before another player's write() runs.
         ByteBuf src = delta.packetBuf();
         if (src == null || src.refCnt() <= 0 || src.readableBytes() <= 0) {
             return null;

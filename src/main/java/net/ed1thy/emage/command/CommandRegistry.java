@@ -143,10 +143,8 @@ public class CommandRegistry {
                     messageManager.load();
                     messageManager.sendConfigReloaded(ctx.sender().getSender());
 
-                    // Fix chunk ban and resync all active frames/groups
                     Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
                         try {
-                            // Step 1: Collect all item frames in all loaded chunks
                             record FrameInspection(ItemFrame frame, Integer mapId, boolean hasLoading) {}
                             final List<FrameInspection> inspectedFrames = new ArrayList<>();
                             final Map<UUID, Set<Long>> loadedChunkKeysByWorld = new HashMap<>();
@@ -182,7 +180,6 @@ public class CommandRegistry {
                                 return;
                             }
 
-                            // Step 2: Validate each inspected frame against DB and flat files
                             final List<ItemFrame> brokenFramesToFix = new ArrayList<>();
                             final Map<Integer, List<ItemFrame>> validFramesByGroup = new HashMap<>();
                             final Map<Integer, MapMetadata> metaByGroup = new HashMap<>();
@@ -206,7 +203,6 @@ public class CommandRegistry {
                                 }
                             }
 
-                            // Step 3: Check DB placed frames ONLY in chunks that are currently LOADED
                             int cleanedDbFrames = 0;
                             Set<UUID> presentUuids = inspectedFrames.stream()
                                     .map(f -> f.frame().getUniqueId())
@@ -228,7 +224,6 @@ public class CommandRegistry {
                                 }
                             }
 
-                            // Step 4: On main thread, fix broken frames, purge render manager & caches, resync valid frames
                             final int fixedCount = brokenFramesToFix.size();
                             final int finalCleanedDb = cleanedDbFrames;
                             Bukkit.getScheduler().runTask(plugin, () -> {

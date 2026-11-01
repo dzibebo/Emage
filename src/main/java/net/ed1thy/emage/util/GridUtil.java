@@ -33,23 +33,23 @@ public class GridUtil {
             yaw = (yaw % 360 + 360) % 360;
             
             if (facing == org.bukkit.block.BlockFace.DOWN) {
-                if (yaw >= 315 || yaw < 45) { // South
+                if (yaw >= 315 || yaw < 45) {
                     return new GridVectors(1, 0, 0, 0, 0, -1);
-                } else if (yaw >= 45 && yaw < 135) { // West
+                } else if (yaw >= 45 && yaw < 135) {
                     return new GridVectors(0, 0, 1, 1, 0, 0);
-                } else if (yaw >= 135 && yaw < 225) { // North
+                } else if (yaw >= 135 && yaw < 225) {
                     return new GridVectors(-1, 0, 0, 0, 0, 1);
-                } else { // East
+                } else {
                     return new GridVectors(0, 0, -1, -1, 0, 0);
                 }
-            } else { // UP
-                if (yaw >= 315 || yaw < 45) { // South
+            } else {
+                if (yaw >= 315 || yaw < 45) {
                     return new GridVectors(1, 0, 0, 0, 0, 1);
-                } else if (yaw >= 45 && yaw < 135) { // West
+                } else if (yaw >= 45 && yaw < 135) {
                     return new GridVectors(0, 0, 1, -1, 0, 0);
-                } else if (yaw >= 135 && yaw < 225) { // North
+                } else if (yaw >= 135 && yaw < 225) {
                     return new GridVectors(-1, 0, 0, 0, 0, -1);
-                } else { // East
+                } else {
                     return new GridVectors(0, 0, -1, 1, 0, 0);
                 }
             }

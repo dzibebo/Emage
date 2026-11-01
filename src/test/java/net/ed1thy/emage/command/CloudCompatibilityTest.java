@@ -10,7 +10,6 @@ class CloudCompatibilityTest {
 
     @Test
     void testCloudPaperVersionAndPatch() throws Exception {
-        // Verify that ItemStackParser$ModernParser class file contains asBukkitMirror
         String classResource = "org/incendo/cloud/bukkit/parser/ItemStackParser$ModernParser.class";
         try (InputStream is = getClass().getClassLoader().getResourceAsStream(classResource)) {
             assertNotNull(is, "ItemStackParser$ModernParser.class should be present in the classpath");
