@@ -102,6 +102,12 @@ public class PersistenceListener implements Listener {
                     mapMeta.setMapId(mapId);
                     bukkitMap.setItemMeta(mapMeta);
                 }
+                if (frame.getItem().getType() != Material.FILLED_MAP) {
+                    frame.setItem(bukkitMap);
+                }
+                if (frame.isVisible()) {
+                    frame.setVisible(false);
+                }
                 com.github.retrooper.packetevents.protocol.item.ItemStack peItem = SpigotConversionUtil.fromBukkitItemStack(bukkitMap);
 
                 FrameNode node = new FrameNode(frame.getEntityId(), frame.getUniqueId(), frame.getWorld().getUID(),

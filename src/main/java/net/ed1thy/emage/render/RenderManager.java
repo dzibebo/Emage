@@ -77,7 +77,7 @@ public class RenderManager {
             for (SyncGroup group : activeGroups.values()) {
                 group.updateVisibility();
             }
-        }, 20L, 20L);
+        }, 5L, 5L);
     }
 
     private void tickAll() {
