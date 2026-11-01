@@ -96,6 +96,10 @@ public class CommandRegistry {
 
         var builder = commandManager.commandBuilder("emage", "em");
 
+        commandManager.command(builder.handler(ctx -> {
+            messageManager.sendUsage(ctx.sender().getSender());
+        }));
+
         commandManager.command(builder.literal("apply")
                 .required("url", StringParser.stringParser(StringParser.StringMode.GREEDY))
                 .handler(ctx -> {
@@ -577,7 +581,7 @@ public class CommandRegistry {
                                     " at X:" + loc.getBlockX() + " Y:" + loc.getBlockY() + " Z:" + loc.getBlockZ() + 
                                     " in world " + loc.getWorld().getName());
 
-            messageManager.sendActionBar(player, "");
+            messageManager.clearActionBar(player);
             messageManager.sendSuccess(player, columns * rows, meta.syncGroupID());
         } finally {
             decrementTask.run();
@@ -591,20 +595,33 @@ public class CommandRegistry {
         }
 
         if (cause instanceof UnknownHostException) {
-            return "Could not find the server. Check the URL or your internet connection.";
+            return messageManager.getErrorUnknownHost();
         } else if (cause instanceof HttpTimeoutException || cause instanceof SocketTimeoutException) {
-            return "The server took too long to respond. It may be offline or overloaded.";
+            return messageManager.getErrorTimeout();
         } else if (cause instanceof ConnectException) {
-            return "Failed to connect to the server. The host may be down or blocking connections.";
+            return messageManager.getErrorConnect();
         } else if (cause instanceof javax.net.ssl.SSLException) {
-            return "An SSL/TLS error occurred. The website's certificate may be invalid or unsupported.";
+            return messageManager.getErrorSsl();
         } else if (cause instanceof SecurityException) {
-            return cause.getMessage();
-        } else if (cause instanceof java.io.IOException && cause.getMessage() != null && cause.getMessage().contains("Download size limit exceeded")) {
-            return cause.getMessage();
+            String msg = cause.getMessage();
+            if (msg != null && (msg.contains("blocked internal IP") || msg.contains("blocked") || msg.contains("Cloud Metadata"))) {
+                return messageManager.getErrorBlocked();
+            }
+            return msg != null ? msg : messageManager.getErrorUnknown();
+        } else if (cause instanceof java.io.IOException && cause.getMessage() != null) {
+            String msg = cause.getMessage();
+            if (msg.contains("Download size limit exceeded")) {
+                return messageManager.getErrorSizeLimit();
+            }
+            if (msg.contains("Unsupported image format") || msg.contains("invalid image header")) {
+                return messageManager.getUnsupportedFormat();
+            }
+            if (msg.contains("exceed the safe limit")) {
+                return messageManager.getErrorDimensionsLimit();
+            }
         }
 
-        return cause.getMessage() != null ? cause.getMessage() : "An unknown error occurred.";
+        return cause.getMessage() != null ? cause.getMessage() : messageManager.getErrorUnknown();
     }
 
     private void startImagePipeline(Player player, String url, GridUtil.GridData gridData) {
@@ -630,7 +647,7 @@ public class CommandRegistry {
             }
 
             messageManager.sendProcessing(player, finalColumns, finalRows);
-            messageManager.sendActionBar(player, "<color:#4CABBB>Downloading...</color>");
+            messageManager.sendDownloading(player);
         } catch (Exception e) {
             decrementTask.run();
             throw e;
@@ -657,7 +674,7 @@ public class CommandRegistry {
                 if (throwable != null) {
                     String friendlyError = getFriendlyErrorMessage(throwable);
                     messageManager.sendError(player, friendlyError);
-                    messageManager.sendActionBar(player, "");
+                    messageManager.clearActionBar(player);
                     revertLoadingSpinner(gridFrames);
                     decrementTask.run();
 
@@ -702,8 +719,8 @@ public class CommandRegistry {
                         } else {
                             java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(new ByteArrayInputStream(imageBytes));
                             if (img == null) {
-                                messageManager.sendReadError(player, "Unsupported image format or corrupt file.");
-                                messageManager.sendActionBar(player, "");
+                                messageManager.sendReadError(player, messageManager.getUnsupportedFormat());
+                                messageManager.clearActionBar(player);
                                 revertLoadingSpinner(gridFrames);
                                 decrementTask.run();
 
@@ -723,21 +740,21 @@ public class CommandRegistry {
 
                         if (isAnimated && (finalColumns > configManager.maxGifGridSize || finalRows > configManager.maxGifGridSize)) {
                             messageManager.sendGifSizeLimit(player, configManager.maxGifGridSize, configManager.maxGifGridSize);
-                            messageManager.sendActionBar(player, "");
+                            messageManager.clearActionBar(player);
                             revertLoadingSpinner(gridFrames);
                             decrementTask.run();
                             return;
                         }
                         if (!isAnimated && (finalColumns > configManager.maxImageGridSize || finalRows > configManager.maxImageGridSize)) {
                             messageManager.sendImageSizeLimit(player, configManager.maxImageGridSize, configManager.maxImageGridSize);
-                            messageManager.sendActionBar(player, "");
+                            messageManager.clearActionBar(player);
                             revertLoadingSpinner(gridFrames);
                             decrementTask.run();
                             return;
                         }
                         if (isAnimated && totalFrames > configManager.maxGifFrames) {
                             messageManager.sendGifFrameLimit(player, configManager.maxGifFrames, totalFrames);
-                            messageManager.sendActionBar(player, "");
+                            messageManager.clearActionBar(player);
                             revertLoadingSpinner(gridFrames);
                             decrementTask.run();
                             return;
@@ -748,12 +765,12 @@ public class CommandRegistry {
 
                         pipeline.processStreamAsync(provider, meta.syncGroupID(), mapIds, finalColumns, finalRows, progress -> {
                             int percent = (int) Math.round(progress * 100);
-                            messageManager.sendActionBar(player, "<color:#4CABBB>Processing Frames: <white>" + percent + "%</white></color>");
+                            messageManager.sendProcessingFrames(player, percent);
                         }).whenComplete((baseFrame, err) -> {
                             if (err != null) {
                                 err.printStackTrace();
-                                messageManager.sendProcessError(player, err.getMessage());
-                                messageManager.sendActionBar(player, "");
+                                messageManager.sendProcessError(player, getFriendlyErrorMessage(err));
+                                messageManager.clearActionBar(player);
                                 revertLoadingSpinner(gridFrames);
                                 decrementTask.run();
                                 return;
@@ -765,8 +782,8 @@ public class CommandRegistry {
                         });
 
                     } catch (Exception e) {
-                        messageManager.sendReadError(player, e.getMessage());
-                        messageManager.sendActionBar(player, "");
+                        messageManager.sendReadError(player, getFriendlyErrorMessage(e));
+                        messageManager.clearActionBar(player);
                         revertLoadingSpinner(gridFrames);
                         closeStreamQuietly(inputStream);
                         decrementTask.run();
