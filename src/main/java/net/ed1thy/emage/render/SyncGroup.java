@@ -105,6 +105,7 @@ public class SyncGroup {
             this.world = Bukkit.getWorld(newNodes.get(0).getWorldUUID());
         }
         addNewWallBounds(newNodes);
+        this.initializedUsers.clear();
     }
 
     private void addNewWallBounds(List<FrameNode> wallNodes) {
@@ -134,45 +135,65 @@ public class SyncGroup {
         if (world == null || centerLocs.isEmpty()) return;
 
         for (Player player : world.getPlayers()) {
-            Location pLoc = player.getLocation();
-            if (pLoc.getX() < minX - 32 || pLoc.getX() > maxX + 32 ||
-                    pLoc.getY() < minY - 32 || pLoc.getY() > maxY + 32 ||
-                    pLoc.getZ() < minZ - 32 || pLoc.getZ() > maxZ + 32) {
-                continue;
-            }
-
-            UUID uuid = player.getUniqueId();
-            if (pendingVisibilityChecks.contains(uuid)) continue;
-
-            boolean inRange = false;
-            for (Location center : centerLocs) {
-                if (center.distanceSquared(pLoc) <= 1024.0) {
-                    inRange = true;
-                    break;
-                }
-            }
-            if (!inRange) continue;
-
-            Location eyeLoc = player.getEyeLocation().clone();
-            Vector lookDir = eyeLoc.getDirection().clone();
-
-            pendingVisibilityChecks.add(uuid);
-
-            CompletableFuture.runAsync(() -> {
-                boolean canSee = calculateVisibilityAsync(eyeLoc, lookDir);
-
-                if (canSee) {
-                    visiblePlayers.add(uuid);
-                } else {
-                    visiblePlayers.remove(uuid);
-                    initializedUsers.remove(uuid);
-                }
-
-                pendingVisibilityChecks.remove(uuid);
-            }, vtExecutor);
+            checkPlayerVisibility(player);
         }
 
-        initializedUsers.removeIf(uuid -> !visiblePlayers.contains(uuid) && Bukkit.getPlayer(uuid) == null);
+        visiblePlayers.removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
+        initializedUsers.removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
+        pendingVisibilityChecks.removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
+    }
+
+    public void checkPlayerVisibility(@NotNull Player player) {
+        if (world == null || centerLocs.isEmpty() || !player.getWorld().equals(world)) return;
+
+        Location pLoc = player.getLocation();
+        if (pLoc.getX() < minX - 32 || pLoc.getX() > maxX + 32 ||
+                pLoc.getY() < minY - 32 || pLoc.getY() > maxY + 32 ||
+                pLoc.getZ() < minZ - 32 || pLoc.getZ() > maxZ + 32) {
+            visiblePlayers.remove(player.getUniqueId());
+            initializedUsers.remove(player.getUniqueId());
+            return;
+        }
+
+        UUID uuid = player.getUniqueId();
+        if (pendingVisibilityChecks.contains(uuid)) return;
+
+        boolean inRange = false;
+        for (Location center : centerLocs) {
+            if (center.distanceSquared(pLoc) <= 1024.0) {
+                inRange = true;
+                break;
+            }
+        }
+        if (!inRange) {
+            visiblePlayers.remove(uuid);
+            initializedUsers.remove(uuid);
+            return;
+        }
+
+        Location eyeLoc = player.getEyeLocation().clone();
+        Vector lookDir = eyeLoc.getDirection().clone();
+
+        pendingVisibilityChecks.add(uuid);
+
+        CompletableFuture.runAsync(() -> {
+            boolean canSee = calculateVisibilityAsync(eyeLoc, lookDir);
+
+            if (canSee) {
+                visiblePlayers.add(uuid);
+            } else {
+                visiblePlayers.remove(uuid);
+                initializedUsers.remove(uuid);
+            }
+
+            pendingVisibilityChecks.remove(uuid);
+        }, vtExecutor);
+    }
+
+    public void onPlayerQuit(@NotNull UUID uuid) {
+        visiblePlayers.remove(uuid);
+        initializedUsers.remove(uuid);
+        pendingVisibilityChecks.remove(uuid);
     }
 
     private boolean calculateVisibilityAsync(Location eyeLoc, Vector lookDir) {
@@ -210,6 +231,11 @@ public class SyncGroup {
 
     public boolean shouldTick(long currentTimeMillis) {
         if (!metadata.isAnimated()) {
+            for (UUID uuid : visiblePlayers) {
+                if (!initializedUsers.contains(uuid)) {
+                    return true;
+                }
+            }
             return (currentTimeMillis - lastTickTime) >= 1000;
         }
         int delay = (frameDelays != null && currentFrameIndex < frameDelays.length) ? frameDelays[currentFrameIndex] : metadata.delayMs();

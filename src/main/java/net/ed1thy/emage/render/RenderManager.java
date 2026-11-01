@@ -195,6 +195,33 @@ public class RenderManager {
                 }
             }
         }
+        Iterator<Map.Entry<User, Queue<PacketWrapper<?>>>> iterator = userPacketQueues.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<User, Queue<PacketWrapper<?>>> entry = iterator.next();
+            if (entry.getKey().getUUID().equals(uuid)) {
+                Queue<PacketWrapper<?>> queue = entry.getValue();
+                PacketWrapper<?> dropped;
+                while ((dropped = queue.poll()) != null) {
+                    if (dropped instanceof ZeroCopyMapWrapper mapPacket) {
+                        mapPacket.getDelta().freeMemory();
+                    }
+                }
+                iterator.remove();
+            }
+        }
+    }
+
+    public void onPlayerQuit(@NotNull UUID uuid) {
+        clearQueue(uuid);
+        for (SyncGroup group : activeGroups.values()) {
+            group.onPlayerQuit(uuid);
+        }
+    }
+
+    public void onPlayerJoin(@NotNull org.bukkit.entity.Player player) {
+        for (SyncGroup group : activeGroups.values()) {
+            group.checkPlayerVisibility(player);
+        }
     }
 
     public void reset() {

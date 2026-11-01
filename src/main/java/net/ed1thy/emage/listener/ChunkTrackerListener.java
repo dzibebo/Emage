@@ -59,15 +59,35 @@ public class ChunkTrackerListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
-        tracker.registerPlayer(event.getPlayer());
+        org.bukkit.entity.Player player = event.getPlayer();
+        UUID uuid = player.getUniqueId();
+        tracker.registerPlayer(player);
+        User user = tracker.getUser(uuid);
+
+        for (long chunkKey : player.getSentChunkKeys()) {
+            tracker.addViewer(chunkKey, uuid);
+            List<FrameNode> nodesInChunk = chunkNodeCache.get(chunkKey);
+            if (nodesInChunk != null && user != null) {
+                for (FrameNode node : nodesInChunk) {
+                    renderManager.queueSpoof(user, node);
+                }
+            }
+        }
+
+        renderManager.onPlayerJoin(player);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerChunkLoad(PlayerChunkLoadEvent event) {
         long chunkKey = event.getChunk().getChunkKey();
-        tracker.addViewer(chunkKey, event.getPlayer().getUniqueId());
+        UUID uuid = event.getPlayer().getUniqueId();
+        tracker.addViewer(chunkKey, uuid);
 
-        User user = tracker.getUser(event.getPlayer().getUniqueId());
+        User user = tracker.getUser(uuid);
+        if (user == null) {
+            tracker.registerPlayer(event.getPlayer());
+            user = tracker.getUser(uuid);
+        }
         if (user == null) return;
 
         List<FrameNode> nodesInChunk = chunkNodeCache.get(chunkKey);
@@ -86,6 +106,8 @@ public class ChunkTrackerListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerQuit(PlayerQuitEvent event) {
-        tracker.removeViewerFromAll(event.getPlayer().getUniqueId());
+        UUID uuid = event.getPlayer().getUniqueId();
+        renderManager.onPlayerQuit(uuid);
+        tracker.removeViewerFromAll(uuid);
     }
 }

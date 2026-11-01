@@ -121,6 +121,8 @@ public class Emage extends JavaPlugin {
         PersistenceListener persistenceListener = new PersistenceListener(this, interactListener, mapMetadataRepository, renderManager, chunkListener, configManager, flatFileStorage, virtualThreadExecutor);
         getServer().getPluginManager().registerEvents(persistenceListener, this);
 
+        getServer().getScheduler().runTask(this, persistenceListener::restoreLoadedChunks);
+
         this.commandRegistry = new CommandRegistry(
                 this, configManager, messageManager, imageDownloader, mapMetadataRepository,
                 imagePipeline, flatFileStorage, renderManager, packetSender, chunkListener,

@@ -51,43 +51,73 @@ public class PersistenceListener implements Listener {
         this.vtExecutor = vtExecutor;
     }
 
+    public void restoreLoadedChunks() {
+        for (org.bukkit.World world : Bukkit.getWorlds()) {
+            for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
+                List<ItemFrame> framesInChunk = new ArrayList<>();
+                for (Entity entity : chunk.getEntities()) {
+                    if (entity instanceof ItemFrame frame) {
+                        if (frame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
+                            framesInChunk.add(frame);
+                        }
+                    }
+                }
+                if (!framesInChunk.isEmpty()) {
+                    processLoadedFrames(framesInChunk, chunk);
+                }
+            }
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onEntitiesLoad(EntitiesLoadEvent event) {
+        List<ItemFrame> framesInChunk = new ArrayList<>();
+        for (Entity entity : event.getEntities()) {
+            if (entity instanceof ItemFrame frame) {
+                if (frame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
+                    framesInChunk.add(frame);
+                }
+            }
+        }
+        if (!framesInChunk.isEmpty()) {
+            processLoadedFrames(framesInChunk, event.getChunk());
+        }
+    }
+
+    public void processLoadedFrames(List<ItemFrame> frames, org.bukkit.Chunk chunk) {
         List<ItemFrame> loadedFrames = new ArrayList<>();
         List<FrameNode> createdNodes = new ArrayList<>();
         List<Integer> loadedMapIds = new ArrayList<>();
 
-        for (Entity entity : event.getEntities()) {
-            if (entity instanceof ItemFrame frame) {
-                if (frame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
-                    Integer mapId = frame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
-                    if (mapId == null) continue;
+        for (ItemFrame frame : frames) {
+            if (frame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
+                Integer mapId = frame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
+                if (mapId == null) continue;
 
-                    loadedFrames.add(frame);
-                    loadedMapIds.add(mapId);
+                loadedFrames.add(frame);
+                loadedMapIds.add(mapId);
 
-                    ItemStack bukkitMap = new ItemStack(Material.FILLED_MAP);
-                    if (bukkitMap.getItemMeta() instanceof MapMeta mapMeta) {
-                        mapMeta.setMapId(mapId);
-                        bukkitMap.setItemMeta(mapMeta);
-                    }
-                    com.github.retrooper.packetevents.protocol.item.ItemStack peItem = SpigotConversionUtil.fromBukkitItemStack(bukkitMap);
-
-                    FrameNode node = new FrameNode(frame.getEntityId(), frame.getUniqueId(), frame.getWorld().getUID(),
-                            frame.getLocation().getChunk().getX(), frame.getLocation().getChunk().getZ(),
-                            frame.getLocation().getBlockX(), frame.getLocation().getBlockY(), frame.getLocation().getBlockZ(), mapId, peItem);
-
-                    chunkTrackerListener.addNodeToCache(node);
-                    createdNodes.add(node);
+                ItemStack bukkitMap = new ItemStack(Material.FILLED_MAP);
+                if (bukkitMap.getItemMeta() instanceof MapMeta mapMeta) {
+                    mapMeta.setMapId(mapId);
+                    bukkitMap.setItemMeta(mapMeta);
                 }
+                com.github.retrooper.packetevents.protocol.item.ItemStack peItem = SpigotConversionUtil.fromBukkitItemStack(bukkitMap);
+
+                FrameNode node = new FrameNode(frame.getEntityId(), frame.getUniqueId(), frame.getWorld().getUID(),
+                        frame.getLocation().getChunk().getX(), frame.getLocation().getChunk().getZ(),
+                        frame.getLocation().getBlockX(), frame.getLocation().getBlockY(), frame.getLocation().getBlockZ(), mapId, peItem);
+
+                chunkTrackerListener.addNodeToCache(node);
+                createdNodes.add(node);
             }
         }
 
         if (loadedFrames.isEmpty()) return;
 
-        UUID worldUuid = event.getChunk().getWorld().getUID();
-        int cx = event.getChunk().getX();
-        int cz = event.getChunk().getZ();
+        UUID worldUuid = chunk.getWorld().getUID();
+        int cx = chunk.getX();
+        int cz = chunk.getZ();
 
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
@@ -120,22 +150,39 @@ public class PersistenceListener implements Listener {
                     }
                 }
 
+                Map<Integer, List<FrameNode>> nodesByGroup = new HashMap<>();
+                Map<Integer, MapMetadata> metaByGroup = new HashMap<>();
+                List<ItemFrame> brokenFrames = new ArrayList<>();
+
                 for (int i = 0; i < loadedFrames.size(); i++) {
                     ItemFrame frame = loadedFrames.get(i);
                     FrameNode node = createdNodes.get(i);
                     int mapId = node.getMapID();
 
                     Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(mapId);
+                    if (metaOpt.isPresent() && flatFileStorage.groupExists(metaOpt.get().syncGroupID())) {
+                        MapMetadata meta = metaOpt.get();
+                        nodesByGroup.computeIfAbsent(meta.syncGroupID(), k -> new ArrayList<>()).add(node);
+                        metaByGroup.putIfAbsent(meta.syncGroupID(), meta);
+                    } else {
+                        brokenFrames.add(frame);
+                    }
+                }
 
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        if (metaOpt.isPresent() && flatFileStorage.groupExists(metaOpt.get().syncGroupID())) {
-                            MapMetadata meta = metaOpt.get();
-                            SyncGroup group = renderManager.getSyncGroup(meta.syncGroupID());
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    for (Map.Entry<Integer, List<FrameNode>> entry : nodesByGroup.entrySet()) {
+                        int groupId = entry.getKey();
+                        List<FrameNode> groupNodes = entry.getValue();
+                        MapMetadata meta = metaByGroup.get(groupId);
+                        if (meta == null) continue;
 
-                            if (group == null) {
-                                group = new SyncGroup(meta, new CopyOnWriteArrayList<>(Collections.singletonList(node)), flatFileStorage, renderManager.getGlobalFrameCache(), vtExecutor, null);
-                                renderManager.registerSyncGroup(meta.syncGroupID(), group);
-                            } else {
+                        SyncGroup group = renderManager.getSyncGroup(groupId);
+                        if (group == null) {
+                            group = new SyncGroup(meta, new CopyOnWriteArrayList<>(groupNodes), flatFileStorage, renderManager.getGlobalFrameCache(), vtExecutor, null);
+                            renderManager.registerSyncGroup(groupId, group);
+                        } else {
+                            List<FrameNode> toAdd = new ArrayList<>();
+                            for (FrameNode node : groupNodes) {
                                 boolean exists = false;
                                 for (FrameNode existing : group.getNodes()) {
                                     if (existing.getFrameUUID().equals(node.getFrameUUID())) {
@@ -144,21 +191,26 @@ public class PersistenceListener implements Listener {
                                     }
                                 }
                                 if (!exists) {
-                                    group.addNewWall(Collections.singletonList(node));
+                                    toAdd.add(node);
                                 }
                             }
-                        } else {
-                            frame.getPersistentDataContainer().remove(interactListener.getEmageKey());
-                            frame.getPersistentDataContainer().remove(interactListener.getLoadingKey());
-                            frame.setItem(new ItemStack(Material.AIR));
-                            frame.setVisible(true);
-                            chunkTrackerListener.removeNodeFromCache(node.getFrameUUID(), node.getChunkKey());
-                            try {
-                                repository.removePlacedFrameByUUID(frame.getUniqueId());
-                            } catch (Exception ignored) {}
+                            if (!toAdd.isEmpty()) {
+                                group.addNewWall(toAdd);
+                            }
                         }
-                    });
-                }
+                    }
+
+                    for (ItemFrame frame : brokenFrames) {
+                        frame.getPersistentDataContainer().remove(interactListener.getEmageKey());
+                        frame.getPersistentDataContainer().remove(interactListener.getLoadingKey());
+                        frame.setItem(new ItemStack(Material.AIR));
+                        frame.setVisible(true);
+                        chunkTrackerListener.removeNodeFromCache(frame.getUniqueId(), chunk.getChunkKey());
+                        try {
+                            repository.removePlacedFrameByUUID(frame.getUniqueId());
+                        } catch (Exception ignored) {}
+                    }
+                });
 
             } catch (Exception e) {
                 plugin.getLogger().warning("Failed GC healing / restore for Emage chunk: " + e.getMessage());
