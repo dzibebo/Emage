@@ -144,7 +144,11 @@ public class SyncGroup {
     }
 
     public void checkPlayerVisibility(@NotNull Player player) {
-        if (world == null || centerLocs.isEmpty() || !player.getWorld().equals(world)) return;
+        if (world == null || centerLocs.isEmpty() || !player.getWorld().equals(world)) {
+            visiblePlayers.remove(player.getUniqueId());
+            initializedUsers.remove(player.getUniqueId());
+            return;
+        }
 
         Location pLoc = player.getLocation();
         if (pLoc.getX() < minX - 32 || pLoc.getX() > maxX + 32 ||
@@ -183,7 +187,6 @@ public class SyncGroup {
                 visiblePlayers.add(uuid);
             } else {
                 visiblePlayers.remove(uuid);
-                initializedUsers.remove(uuid);
             }
 
             pendingVisibilityChecks.remove(uuid);
