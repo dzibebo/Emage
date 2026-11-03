@@ -219,6 +219,10 @@ public class SyncGroup {
         return baseFrames.get(mapId);
     }
 
+    public void markNodeInitialized(@NotNull UUID uuid, int mapId) {
+        initializedMapsPerUser.computeIfAbsent(uuid, k -> ConcurrentHashMap.newKeySet()).add(mapId);
+    }
+
     public void invalidateNodes(@NotNull UUID uuid, @NotNull List<FrameNode> unrenderedNodes) {
         Set<Integer> sent = initializedMapsPerUser.get(uuid);
         if (sent != null) {

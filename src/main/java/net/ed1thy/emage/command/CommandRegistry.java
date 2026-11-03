@@ -142,6 +142,16 @@ public class CommandRegistry {
                 })
         );
 
+        commandManager.command(builder.literal("info")
+                .handler(ctx -> {
+                    if (!(ctx.sender().getSender() instanceof Player player)) {
+                        messageManager.sendOnlyPlayers(ctx.sender().getSender());
+                        return;
+                    }
+                    Bukkit.getScheduler().runTask(plugin, () -> handleInfoSync(player));
+                })
+        );
+
         commandManager.command(builder.literal("reload")
                 .permission("emage.admin")
                 .handler(ctx -> {
@@ -943,6 +953,48 @@ public class CommandRegistry {
 
             } catch (Exception e) {
                 messageManager.sendCleanupFailed(player);
+            }
+        });
+    }
+
+    private void handleInfoSync(Player player) {
+        Entity target = player.getTargetEntity(10);
+        if (!(target instanceof ItemFrame frame)) {
+            messageManager.sendNoFrame(player);
+            return;
+        }
+        if (!frame.getPersistentDataContainer().has(interactListener.getEmageKey(), PersistentDataType.INTEGER)) {
+            messageManager.sendNotEmageFrame(player);
+            return;
+        }
+        int mapId = frame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(mapId);
+                if (metaOpt.isEmpty()) {
+                    messageManager.sendMetadataNotFound(player);
+                    return;
+                }
+                MapMetadata meta = metaOpt.get();
+                org.bukkit.OfflinePlayer creator = Bukkit.getOfflinePlayer(meta.creatorUUID());
+                String authorName = creator.getName() != null ? creator.getName() : meta.creatorUUID().toString();
+                String dateStr = "Неизвестно";
+                if (meta.createdAt() > 0) {
+                    java.time.Instant instant = java.time.Instant.ofEpochMilli(meta.createdAt());
+                    java.time.format.DateTimeFormatter formatter = java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss")
+                            .withZone(java.time.ZoneId.systemDefault());
+                    dateStr = formatter.format(instant);
+                }
+                final String finalAuthor = authorName;
+                final String finalDate = dateStr;
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    boolean isAdmin = player.hasPermission("emage.admin");
+                    messageManager.sendInfo(player, finalAuthor, finalDate, meta.columns(), meta.rows(),
+                            meta.columns() * meta.rows(), meta.isAnimated(), meta.totalFrames(), meta.delayMs(),
+                            meta.sourceUrl(), isAdmin);
+                });
+            } catch (Exception e) {
+                messageManager.sendError(player, getFriendlyErrorMessage(e));
             }
         });
     }

@@ -70,6 +70,10 @@ public class RenderManager {
                 .build();
     }
 
+    public ChunkViewerTracker getChunkViewerTracker() {
+        return chunkViewerTracker;
+    }
+
     public Cache<Long, MapFrameUpdate> getGlobalFrameCache() {
         return globalFrameCache;
     }
@@ -271,6 +275,9 @@ public class RenderManager {
                     enqueuePacket(user.getUUID(), pkt);
                 }
             }
+            for (SyncGroup group : activeGroups.values()) {
+                group.markNodeInitialized(user.getUUID(), node.getMapID());
+            }
             return;
         }
 
@@ -283,6 +290,7 @@ public class RenderManager {
                         enqueuePacket(user.getUUID(), pkt);
                     }
                 }
+                group.markNodeInitialized(user.getUUID(), node.getMapID());
                 return;
             }
         }

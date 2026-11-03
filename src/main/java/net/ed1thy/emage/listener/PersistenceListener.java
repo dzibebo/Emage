@@ -13,6 +13,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.ItemFrame;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -102,7 +103,17 @@ public class PersistenceListener implements Listener {
                     mapMeta.setMapId(mapId);
                     bukkitMap.setItemMeta(mapMeta);
                 }
+                boolean needUpdate = false;
                 if (frame.getItem().getType() != Material.FILLED_MAP) {
+                    needUpdate = true;
+                } else if (frame.getItem().getItemMeta() instanceof MapMeta existingMeta) {
+                    if (!existingMeta.hasMapId() || existingMeta.getMapId() != mapId) {
+                        needUpdate = true;
+                    }
+                } else {
+                    needUpdate = true;
+                }
+                if (needUpdate) {
                     frame.setItem(bukkitMap);
                 }
                 if (frame.isVisible()) {
@@ -128,7 +139,6 @@ public class PersistenceListener implements Listener {
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
                 List<UUID> dbExpected = repository.getPlacedFramesInChunk(worldUuid, cx, cz);
-                Set<UUID> actualEmageFrames = new HashSet<>();
 
                 for (int i = 0; i < loadedFrames.size(); i++) {
                     ItemFrame frame = loadedFrames.get(i);
@@ -188,6 +198,19 @@ public class PersistenceListener implements Listener {
                             }
                             if (!toAdd.isEmpty()) {
                                 group.addNewWall(toAdd);
+                            }
+                        }
+                    }
+
+                    for (Player player : chunk.getWorld().getPlayers()) {
+                        int pcx = player.getLocation().getBlockX() >> 4;
+                        int pcz = player.getLocation().getBlockZ() >> 4;
+                        if (Math.abs(pcx - cx) <= 8 && Math.abs(pcz - cz) <= 8) {
+                            com.github.retrooper.packetevents.protocol.player.User user = chunkTrackerListener.getTracker().getUser(player.getUniqueId());
+                            if (user != null) {
+                                for (FrameNode node : createdNodes) {
+                                    renderManager.sendNodeToUser(user, node);
+                                }
                             }
                         }
                     }

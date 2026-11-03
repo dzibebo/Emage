@@ -144,7 +144,8 @@ public class MapMetadataRepository {
                                        int columns, int rows, int totalFrames, int delayMs) throws SQLException {
         try {
             return dbWriteExecutor.submit(() -> {
-                String sql = "INSERT INTO emage_metadata (creator_uuid, source_url, columns, rows, total_frames, delay_ms) VALUES (?, ?, ?, ?, ?, ?)";
+                long now = System.currentTimeMillis();
+                String sql = "INSERT INTO emage_metadata (creator_uuid, source_url, columns, rows, total_frames, delay_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
                 try (Connection conn = dbManager.getConnection();
                      PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
                     ps.setString(1, creatorUuid.toString());
@@ -153,9 +154,10 @@ public class MapMetadataRepository {
                     ps.setInt(4, rows);
                     ps.setInt(5, totalFrames);
                     ps.setInt(6, delayMs);
+                    ps.setLong(7, now);
                     ps.executeUpdate();
                     try (ResultSet rs = ps.getGeneratedKeys()) {
-                        if (rs.next()) return new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs);
+                        if (rs.next()) return new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs, now);
                         else throw new SQLException("Failed to retrieve auto-generated sync_group_id from SQLite.");
                     }
                 }
@@ -236,11 +238,15 @@ public class MapMetadataRepository {
         try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, mapId);
             try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) return Optional.of(new MapMetadata(
-                        rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
-                        rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
-                        rs.getInt("total_frames"), rs.getInt("delay_ms")
-                ));
+                if (rs.next()) {
+                    long createdAt = 0L;
+                    try { createdAt = rs.getLong("created_at"); } catch (Exception ignored) {}
+                    return Optional.of(new MapMetadata(
+                            rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
+                            rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
+                            rs.getInt("total_frames"), rs.getInt("delay_ms"), createdAt
+                    ));
+                }
             }
         }
         return Optional.empty();
@@ -261,7 +267,8 @@ public class MapMetadataRepository {
                                        int columns, int rows, int totalFrames, int delayMs) throws SQLException {
         try {
             return dbWriteExecutor.submit(() -> {
-                String sql = "INSERT INTO emage_metadata (creator_uuid, source_url, file_hash, columns, rows, total_frames, delay_ms) VALUES (?, ?, ?, ?, ?, ?, ?)";
+                long now = System.currentTimeMillis();
+                String sql = "INSERT INTO emage_metadata (creator_uuid, source_url, file_hash, columns, rows, total_frames, delay_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
                 try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
                     ps.setString(1, creatorUuid.toString());
                     ps.setString(2, sourceUrl);
@@ -270,9 +277,10 @@ public class MapMetadataRepository {
                     ps.setInt(5, rows);
                     ps.setInt(6, totalFrames);
                     ps.setInt(7, delayMs);
+                    ps.setLong(8, now);
                     ps.executeUpdate();
                     try (ResultSet rs = ps.getGeneratedKeys()) {
-                        if (rs.next()) return new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs);
+                        if (rs.next()) return new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs, now);
                         else throw new SQLException("Failed to retrieve auto-generated ID.");
                     }
                 }
@@ -294,11 +302,15 @@ public class MapMetadataRepository {
             ps.setInt(2, columns);
             ps.setInt(3, rows);
             try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) return Optional.of(new MapMetadata(
-                        rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
-                        rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
-                        rs.getInt("total_frames"), rs.getInt("delay_ms")
-                ));
+                if (rs.next()) {
+                    long createdAt = 0L;
+                    try { createdAt = rs.getLong("created_at"); } catch (Exception ignored) {}
+                    return Optional.of(new MapMetadata(
+                            rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
+                            rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
+                            rs.getInt("total_frames"), rs.getInt("delay_ms"), createdAt
+                    ));
+                }
             }
         }
         return Optional.empty();
@@ -312,11 +324,15 @@ public class MapMetadataRepository {
             ps.setInt(2, columns);
             ps.setInt(3, rows);
             try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) return Optional.of(new MapMetadata(
-                        rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
-                        rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
-                        rs.getInt("total_frames"), rs.getInt("delay_ms")
-                ));
+                if (rs.next()) {
+                    long createdAt = 0L;
+                    try { createdAt = rs.getLong("created_at"); } catch (Exception ignored) {}
+                    return Optional.of(new MapMetadata(
+                            rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
+                            rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
+                            rs.getInt("total_frames"), rs.getInt("delay_ms"), createdAt
+                    ));
+                }
             }
         }
         return Optional.empty();

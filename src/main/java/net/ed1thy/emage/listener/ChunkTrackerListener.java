@@ -12,11 +12,15 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -37,7 +41,6 @@ public class ChunkTrackerListener implements Listener {
 
     public void addNodeToCache(@NotNull FrameNode node) {
         List<FrameNode> list = chunkNodeCache.computeIfAbsent(node.getChunkKey(), k -> new CopyOnWriteArrayList<>());
-
         list.removeIf(existing -> existing.getFrameUUID().equals(node.getFrameUUID()));
         list.add(node);
     }
@@ -60,6 +63,48 @@ public class ChunkTrackerListener implements Listener {
         chunkNodeCache.clear();
     }
 
+    public ChunkViewerTracker getTracker() {
+        return tracker;
+    }
+
+    private void initPlayerChunks(Player player, User user) {
+        UUID uuid = player.getUniqueId();
+        Set<Long> processedKeys = new HashSet<>();
+
+        try {
+            for (long chunkKey : player.getSentChunkKeys()) {
+                processedKeys.add(chunkKey);
+                tracker.addViewer(chunkKey, uuid);
+                List<FrameNode> nodesInChunk = chunkNodeCache.get(chunkKey);
+                if (nodesInChunk != null && !nodesInChunk.isEmpty()) {
+                    for (FrameNode node : nodesInChunk) {
+                        renderManager.sendNodeToUser(user, node);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        if (player.isOnline()) {
+            int pcx = player.getLocation().getBlockX() >> 4;
+            int pcz = player.getLocation().getBlockZ() >> 4;
+            int vd = Math.min(8, Bukkit.getViewDistance());
+            for (int dx = -vd; dx <= vd; dx++) {
+                for (int dz = -vd; dz <= vd; dz++) {
+                    long chunkKey = ((long) (pcx + dx) & 0xFFFFFFFFL) | (((long) (pcz + dz) & 0xFFFFFFFFL) << 32);
+                    if (processedKeys.add(chunkKey)) {
+                        tracker.addViewer(chunkKey, uuid);
+                        List<FrameNode> nodesInChunk = chunkNodeCache.get(chunkKey);
+                        if (nodesInChunk != null && !nodesInChunk.isEmpty()) {
+                            for (FrameNode node : nodesInChunk) {
+                                renderManager.sendNodeToUser(user, node);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
@@ -78,21 +123,18 @@ public class ChunkTrackerListener implements Listener {
             }
             if (user == null) return;
 
-            try {
-                for (long chunkKey : player.getSentChunkKeys()) {
-                    tracker.addViewer(chunkKey, uuid);
-                    List<FrameNode> nodesInChunk = chunkNodeCache.get(chunkKey);
-                    if (nodesInChunk != null && !nodesInChunk.isEmpty()) {
-                        for (FrameNode node : nodesInChunk) {
-                            renderManager.sendNodeToUser(user, node);
-                        }
-                    }
-                }
-            } catch (Throwable ignored) {
-            }
-
+            initPlayerChunks(player, user);
             renderManager.onPlayerJoin(player);
         });
+
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!player.isOnline()) return;
+            User user = tracker.getUser(uuid);
+            if (user != null) {
+                initPlayerChunks(player, user);
+                renderManager.onPlayerJoin(player);
+            }
+        }, 10L);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -118,20 +160,28 @@ public class ChunkTrackerListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onPlayerTeleport(org.bukkit.event.player.PlayerTeleportEvent event) {
+    public void onPlayerTeleport(PlayerTeleportEvent event) {
         Player player = event.getPlayer();
         Bukkit.getScheduler().runTask(plugin, () -> {
             if (player.isOnline()) {
+                User user = tracker.getUser(player.getUniqueId());
+                if (user != null) {
+                    initPlayerChunks(player, user);
+                }
                 renderManager.onPlayerJoin(player);
             }
         });
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
-    public void onPlayerChangedWorld(org.bukkit.event.player.PlayerChangedWorldEvent event) {
+    public void onPlayerChangedWorld(PlayerChangedWorldEvent event) {
         Player player = event.getPlayer();
         Bukkit.getScheduler().runTask(plugin, () -> {
             if (player.isOnline()) {
+                User user = tracker.getUser(player.getUniqueId());
+                if (user != null) {
+                    initPlayerChunks(player, user);
+                }
                 renderManager.onPlayerJoin(player);
             }
         });
@@ -152,7 +202,7 @@ public class ChunkTrackerListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerQuit(PlayerQuitEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
-        renderManager.onPlayerQuit(uuid);
         tracker.removeViewerFromAll(uuid);
+        renderManager.onPlayerQuit(uuid);
     }
 }

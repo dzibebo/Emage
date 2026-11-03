@@ -25,7 +25,8 @@ public class SchemaInitializer {
                     columns INTEGER NOT NULL,
                     rows INTEGER NOT NULL,
                     total_frames INTEGER NOT NULL,
-                    delay_ms INTEGER NOT NULL
+                    delay_ms INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT 0
                 );
                 """;
 
@@ -112,6 +113,22 @@ public class SchemaInitializer {
                 stmt.execute("DROP TABLE IF EXISTS emage_frame_data;");
             }
             try (PreparedStatement ps = connection.prepareStatement("INSERT OR REPLACE INTO emage_schema_version (id, version) VALUES (1, 2)")) {
+                ps.executeUpdate();
+            }
+            currentVersion = 2;
+        }
+
+        if (currentVersion < 3) {
+            try (Statement stmt = connection.createStatement()) {
+                boolean columnExists = false;
+                try (ResultSet rs = connection.getMetaData().getColumns(null, null, "emage_metadata", "created_at")) {
+                    if (rs.next()) columnExists = true;
+                }
+                if (!columnExists) {
+                    stmt.execute("ALTER TABLE emage_metadata ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;");
+                }
+            }
+            try (PreparedStatement ps = connection.prepareStatement("INSERT OR REPLACE INTO emage_schema_version (id, version) VALUES (1, 3)")) {
                 ps.executeUpdate();
             }
         }
