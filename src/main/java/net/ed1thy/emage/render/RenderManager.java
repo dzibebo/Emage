@@ -9,6 +9,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import net.ed1thy.emage.Emage;
 import net.ed1thy.emage.config.ConfigManager;
+import net.ed1thy.emage.model.DeltaFrame;
 import net.ed1thy.emage.model.FrameNode;
 import net.ed1thy.emage.model.MapFrameUpdate;
 import org.bukkit.Bukkit;
@@ -17,6 +18,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.UUID;
@@ -34,8 +36,8 @@ public class RenderManager {
     private final int maxPacketsPerTick;
     private final double viewDistance;
 
-    private static final int MAX_PACKETS_PER_PLAYER_PER_TICK = 100;
-    private static final int MAX_BYTES_PER_PLAYER_PER_TICK = 100_000;
+    private static final int MAX_PACKETS_PER_PLAYER_PER_TICK = 250;
+    private static final int MAX_BYTES_PER_PLAYER_PER_TICK = 1_000_000;
 
     private final Map<Integer, SyncGroup> activeGroups = new ConcurrentHashMap<>();
     private final Queue<SpoofTask> pendingSpoofs = new ConcurrentLinkedQueue<>();
@@ -92,7 +94,7 @@ public class RenderManager {
 
             int spoofSent = 0;
             SpoofTask spoofTask;
-            while (spoofSent < maxPacketsPerTick && (spoofTask = pendingSpoofs.poll()) != null) {
+            while (spoofSent < Math.max(200, maxPacketsPerTick * 5) && (spoofTask = pendingSpoofs.poll()) != null) {
                 packetSender.spoofItemFrameMap(spoofTask.user(), spoofTask.node());
                 spoofSent++;
             }
@@ -123,9 +125,13 @@ public class RenderManager {
                     continue;
                 }
 
-                if (queue.size() > 500) {
-                    int toDrop = queue.size() - 200;
+                if (queue.size() > 2500) {
+                    int toDrop = queue.size() - 1000;
                     for (int i = 0; i < toDrop; i++) {
+                        PacketWrapper<?> peeked = queue.peek();
+                        if (peeked instanceof ZeroCopyMapWrapper mapPacket && mapPacket.getDelta().frameIndex() == 0) {
+                            break;
+                        }
                         PacketWrapper<?> dropped = queue.poll();
                         if (dropped instanceof ZeroCopyMapWrapper mapPacket) {
                             mapPacket.getDelta().freeMemory();
@@ -251,6 +257,41 @@ public class RenderManager {
 
     public void queueSpoof(@NotNull User user, @NotNull FrameNode node) {
         pendingSpoofs.add(new SpoofTask(user, node));
+    }
+
+    public void sendNodeToUser(@NotNull User user, @NotNull FrameNode node) {
+        queueSpoof(user, node);
+
+        long key = (long) node.getMapID() & 0xFFFFFFFFL;
+        MapFrameUpdate update = globalFrameCache.getIfPresent(key);
+        if (update != null && !update.isFreed()) {
+            for (DeltaFrame subChunk : update.parts()) {
+                PacketWrapper<?> pkt = packetSender.createMapPacket(subChunk);
+                if (pkt != null) {
+                    enqueuePacket(user.getUUID(), pkt);
+                }
+            }
+            return;
+        }
+
+        for (SyncGroup group : activeGroups.values()) {
+            MapFrameUpdate base = group.getBaseFrame(node.getMapID());
+            if (base != null && !base.isFreed()) {
+                for (DeltaFrame subChunk : base.parts()) {
+                    PacketWrapper<?> pkt = packetSender.createMapPacket(subChunk);
+                    if (pkt != null) {
+                        enqueuePacket(user.getUUID(), pkt);
+                    }
+                }
+                return;
+            }
+        }
+    }
+
+    public void invalidateNodesForUser(@NotNull UUID uuid, @NotNull List<FrameNode> nodes) {
+        for (SyncGroup group : activeGroups.values()) {
+            group.invalidateNodes(uuid, nodes);
+        }
     }
 
     public void registerSyncGroup(int syncGroupID, @NotNull SyncGroup group) {

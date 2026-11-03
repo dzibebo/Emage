@@ -82,9 +82,9 @@ public class ChunkTrackerListener implements Listener {
                 for (long chunkKey : player.getSentChunkKeys()) {
                     tracker.addViewer(chunkKey, uuid);
                     List<FrameNode> nodesInChunk = chunkNodeCache.get(chunkKey);
-                    if (nodesInChunk != null) {
+                    if (nodesInChunk != null && !nodesInChunk.isEmpty()) {
                         for (FrameNode node : nodesInChunk) {
-                            renderManager.queueSpoof(user, node);
+                            renderManager.sendNodeToUser(user, node);
                         }
                     }
                 }
@@ -109,9 +109,9 @@ public class ChunkTrackerListener implements Listener {
         if (user == null) return;
 
         List<FrameNode> nodesInChunk = chunkNodeCache.get(chunkKey);
-        if (nodesInChunk != null) {
+        if (nodesInChunk != null && !nodesInChunk.isEmpty()) {
             for (FrameNode node : nodesInChunk) {
-                renderManager.queueSpoof(user, node);
+                renderManager.sendNodeToUser(user, node);
             }
             renderManager.onPlayerJoin(event.getPlayer());
         }
@@ -140,7 +140,13 @@ public class ChunkTrackerListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerChunkUnload(PlayerChunkUnloadEvent event) {
         long chunkKey = event.getChunk().getChunkKey();
-        tracker.removeViewer(chunkKey, event.getPlayer().getUniqueId());
+        UUID uuid = event.getPlayer().getUniqueId();
+        tracker.removeViewer(chunkKey, uuid);
+
+        List<FrameNode> nodesInChunk = chunkNodeCache.get(chunkKey);
+        if (nodesInChunk != null && !nodesInChunk.isEmpty()) {
+            renderManager.invalidateNodesForUser(uuid, nodesInChunk);
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)

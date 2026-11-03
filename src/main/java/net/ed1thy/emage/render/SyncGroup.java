@@ -39,7 +39,7 @@ public class SyncGroup {
     private final Map<Integer, MapFrameUpdate> baseFrames = new ConcurrentHashMap<>();
     private final Set<Integer> loadingFrames = ConcurrentHashMap.newKeySet();
 
-    private final Set<UUID> initializedUsers = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, Set<Integer>> initializedMapsPerUser = new ConcurrentHashMap<>();
     private final Set<UUID> visiblePlayers = ConcurrentHashMap.newKeySet();
 
     private final Set<UUID> pendingVisibilityChecks = ConcurrentHashMap.newKeySet();
@@ -124,7 +124,6 @@ public class SyncGroup {
             this.world = Bukkit.getWorld(newNodes.get(0).getWorldUUID());
         }
         addNewWallBounds(newNodes);
-        this.initializedUsers.clear();
     }
 
     private void addNewWallBounds(List<FrameNode> wallNodes) {
@@ -158,7 +157,7 @@ public class SyncGroup {
         }
 
         visiblePlayers.removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
-        initializedUsers.removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
+        initializedMapsPerUser.keySet().removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
         pendingVisibilityChecks.removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
     }
 
@@ -211,8 +210,22 @@ public class SyncGroup {
 
     public void onPlayerQuit(@NotNull UUID uuid) {
         visiblePlayers.remove(uuid);
-        initializedUsers.remove(uuid);
+        initializedMapsPerUser.remove(uuid);
         pendingVisibilityChecks.remove(uuid);
+    }
+
+    @Nullable
+    public MapFrameUpdate getBaseFrame(int mapId) {
+        return baseFrames.get(mapId);
+    }
+
+    public void invalidateNodes(@NotNull UUID uuid, @NotNull List<FrameNode> unrenderedNodes) {
+        Set<Integer> sent = initializedMapsPerUser.get(uuid);
+        if (sent != null) {
+            for (FrameNode node : unrenderedNodes) {
+                sent.remove(node.getMapID());
+            }
+        }
     }
 
     private boolean calculateVisibilityAsync(Location eyeLoc, Vector lookDir) {
@@ -254,7 +267,8 @@ public class SyncGroup {
     public boolean shouldTick(long currentTimeMillis) {
         if (!metadata.isAnimated()) {
             for (UUID uuid : visiblePlayers) {
-                if (!initializedUsers.contains(uuid)) {
+                Set<Integer> sent = initializedMapsPerUser.get(uuid);
+                if (sent == null || sent.size() < nodes.size()) {
                     return true;
                 }
             }
@@ -312,8 +326,6 @@ public class SyncGroup {
             return;
         }
 
-        Set<UUID> usersFullySent = new HashSet<>(visiblePlayers);
-
         for (FrameNode node : nodes) {
             long cacheKey = ((long) currentFrameIndex << 32) | (node.getMapID() & 0xFFFFFFFFL);
             MapFrameUpdate update = frameCache.getIfPresent(cacheKey);
@@ -325,9 +337,10 @@ public class SyncGroup {
 
             if (update != null && !update.isFreed()) {
                 for (UUID uuid : visiblePlayers) {
-                    boolean isNewUser = !initializedUsers.contains(uuid);
+                    Set<Integer> sentMaps = initializedMapsPerUser.computeIfAbsent(uuid, k -> ConcurrentHashMap.newKeySet());
+                    boolean isNewForUser = !sentMaps.contains(node.getMapID());
 
-                    if (isNewUser && currentFrameIndex != 0) {
+                    if (isNewForUser && currentFrameIndex != 0) {
                         MapFrameUpdate base = baseFrames.get(node.getMapID());
                         if (base == null || base.isFreed()) {
                             try {
@@ -350,21 +363,18 @@ public class SyncGroup {
                         }
                     }
 
-                    if (isNewUser || metadata.isAnimated()) {
+                    if (isNewForUser || metadata.isAnimated()) {
                         for (DeltaFrame subChunk : update.parts()) {
                             com.github.retrooper.packetevents.wrapper.PacketWrapper<?> pkt = sender.createMapPacket(subChunk);
                             if (pkt != null) {
                                 renderManager.enqueuePacket(uuid, pkt);
                             }
                         }
+                        sentMaps.add(node.getMapID());
                     }
                 }
-            } else {
-                usersFullySent.clear();
             }
         }
-
-        initializedUsers.addAll(usersFullySent);
 
         lastTickTime = currentTimeMillis;
 
