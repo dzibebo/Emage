@@ -29,6 +29,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.MapMeta;
 import org.bukkit.persistence.PersistentDataType;
+import org.incendo.cloud.execution.CommandExecutionHandler;
 import org.incendo.cloud.execution.ExecutionCoordinator;
 import org.incendo.cloud.paper.PaperCommandManager;
 import org.incendo.cloud.parser.standard.IntegerParser;
@@ -100,32 +101,33 @@ public class CommandRegistry {
             messageManager.sendUsage(ctx.sender().getSender());
         }));
 
+        CommandExecutionHandler<CommandSourceStack> renderHandler = ctx -> {
+            if (!(ctx.sender().getSender() instanceof Player player)) {
+                messageManager.sendOnlyPlayers(ctx.sender().getSender());
+                return;
+            }
+            String raw = ctx.get("input");
+            ParsedRenderArgs args = parseRenderArgs(raw);
+            if (args.url().isEmpty()) {
+                messageManager.sendUsage(player);
+                return;
+            }
+            Bukkit.getScheduler().runTask(plugin, () -> handleRenderSync(player, args.url(), args.columns(), args.rows()));
+        };
+
         commandManager.command(builder.literal("apply")
-                .required("url", StringParser.stringParser(StringParser.StringMode.GREEDY))
-                .handler(ctx -> {
-                    if (!(ctx.sender().getSender() instanceof Player player)) {
-                        messageManager.sendOnlyPlayers(ctx.sender().getSender());
-                        return;
-                    }
-                    String url = ctx.get("url");
-                    Bukkit.getScheduler().runTask(plugin, () -> handleRenderSync(player, url, -1, -1));
-                })
+                .required("input", StringParser.stringParser(StringParser.StringMode.GREEDY))
+                .handler(renderHandler)
+        );
+
+        commandManager.command(builder.literal("render")
+                .required("input", StringParser.stringParser(StringParser.StringMode.GREEDY))
+                .handler(renderHandler)
         );
 
         commandManager.command(builder.literal("apply-grid")
-                .required("columns", IntegerParser.integerParser(1, configManager.maxImageGridSize))
-                .required("rows", IntegerParser.integerParser(1, configManager.maxImageGridSize))
-                .required("url", StringParser.stringParser(StringParser.StringMode.GREEDY))
-                .handler(ctx -> {
-                    if (!(ctx.sender().getSender() instanceof Player player)) {
-                        messageManager.sendOnlyPlayers(ctx.sender().getSender());
-                        return;
-                    }
-                    int columns = ctx.get("columns");
-                    int rows = ctx.get("rows");
-                    String url = ctx.get("url");
-                    Bukkit.getScheduler().runTask(plugin, () -> handleRenderSync(player, url, columns, rows));
-                })
+                .required("input", StringParser.stringParser(StringParser.StringMode.GREEDY))
+                .handler(renderHandler)
         );
 
         commandManager.command(builder.literal("remove")
@@ -353,9 +355,77 @@ public class CommandRegistry {
         }
     }
 
+    private record ParsedRenderArgs(String url, int columns, int rows) {}
+
+    private ParsedRenderArgs parseRenderArgs(String rawInput) {
+        if (rawInput == null || rawInput.isBlank()) {
+            return new ParsedRenderArgs("", -1, -1);
+        }
+        String trimmed = rawInput.trim();
+        String[] parts = trimmed.split("\\s+");
+        if (parts.length >= 3) {
+            try {
+                int c = Integer.parseInt(parts[parts.length - 2]);
+                int r = Integer.parseInt(parts[parts.length - 1]);
+                if (c > 0 && r > 0) {
+                    int endIdx = trimmed.lastIndexOf(parts[parts.length - 2]);
+                    String u = trimmed.substring(0, endIdx).trim();
+                    return new ParsedRenderArgs(cleanUrl(u), c, r);
+                }
+            } catch (NumberFormatException ignored) {}
+            try {
+                int c = Integer.parseInt(parts[0]);
+                int r = Integer.parseInt(parts[1]);
+                if (c > 0 && r > 0) {
+                    String u = trimmed.substring(parts[0].length() + parts[1].length() + 1).trim();
+                    return new ParsedRenderArgs(cleanUrl(u), c, r);
+                }
+            } catch (NumberFormatException ignored) {}
+        }
+        return new ParsedRenderArgs(cleanUrl(trimmed), -1, -1);
+    }
+
+    private String cleanUrl(String raw) {
+        if (raw == null) return "";
+        String url = raw.trim();
+        if ((url.startsWith("\"") && url.endsWith("\""))
+                || (url.startsWith("'") && url.endsWith("'"))
+                || (url.startsWith("<") && url.endsWith(">"))) {
+            url = url.substring(1, url.length() - 1).trim();
+        }
+        url = url.replace("&amp;", "&");
+        if (url.contains("google.") && (url.contains("/imgres?") || url.contains("/imgres&"))) {
+            int idx = url.indexOf("imgurl=");
+            if (idx != -1) {
+                int end = url.indexOf('&', idx);
+                String encoded = (end != -1) ? url.substring(idx + 7, end) : url.substring(idx + 7);
+                try {
+                    url = java.net.URLDecoder.decode(encoded, java.nio.charset.StandardCharsets.UTF_8);
+                } catch (Exception ignored) {}
+            }
+        }
+        if (url.startsWith("//")) {
+            url = "https:" + url;
+        } else if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            url = "https://" + url;
+        }
+        return url;
+    }
+
+    private boolean isLikelyNonImageUrl(String url) {
+        String lower = url.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".php") || lower.endsWith(".asp")
+                || (!lower.contains("image") && !lower.contains("img") && !lower.contains("photo") && !lower.contains("pic") && !lower.matches("(?i).*\\.(png|jpg|jpeg|gif|webp)(\\?.*)?$"));
+    }
+
     private void handleRenderSync(Player player, String url, int inputColumns, int inputRows) {
         if (activeProcessingTasks.get() >= configManager.maxConcurrentTasks) {
             messageManager.sendMaxTasksReached(player);
+            return;
+        }
+
+        if (inputColumns > configManager.maxImageGridSize || inputRows > configManager.maxImageGridSize) {
+            messageManager.sendImageSizeLimit(player, configManager.maxImageGridSize, configManager.maxImageGridSize);
             return;
         }
 
@@ -678,7 +748,7 @@ public class CommandRegistry {
                     revertLoadingSpinner(gridFrames);
                     decrementTask.run();
 
-                    if (!url.matches("(?i).*\\.(png|jpg|jpeg|gif|webp)(\\?.*)?$")) {
+                    if (isLikelyNonImageUrl(url)) {
                         messageManager.sendSmartUrlHint(player);
                     }
                     return;
@@ -724,7 +794,7 @@ public class CommandRegistry {
                                 revertLoadingSpinner(gridFrames);
                                 decrementTask.run();
 
-                                if (!url.matches("(?i).*\\.(png|jpg|jpeg|gif|webp)(\\?.*)?$")) {
+                                if (isLikelyNonImageUrl(url)) {
                                     messageManager.sendSmartUrlHint(player);
                                 }
                                 return;

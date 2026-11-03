@@ -53,8 +53,12 @@ public class ImageDownloader {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(uri)
                     .timeout(Duration.ofSeconds(httpClient.getReadTimeoutSeconds()))
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) EmagePlugin/1.0")
-                    .header("Accept", "image/png, image/jpeg, image/gif, image/webp")
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+                    .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+                    .header("Accept-Language", "en-US,en;q=0.9,ru;q=0.8")
+                    .header("Sec-Fetch-Dest", "image")
+                    .header("Sec-Fetch-Mode", "no-cors")
+                    .header("Sec-Fetch-Site", "cross-site")
                     .GET()
                     .build();
 
@@ -101,9 +105,12 @@ public class ImageDownloader {
         }
 
         Optional<String> contentTypeOpt = response.headers().firstValue("Content-Type");
-        if (contentTypeOpt.isEmpty() || (!contentTypeOpt.get().startsWith("image/") && !contentTypeOpt.get().equals("application/octet-stream"))) {
-            closeStreamQuietly(response.body());
-            return CompletableFuture.failedFuture(new RuntimeException("The URL did not return a valid image MIME type."));
+        if (contentTypeOpt.isPresent()) {
+            String ct = contentTypeOpt.get().toLowerCase(java.util.Locale.ROOT).trim();
+            if (!ct.startsWith("image/") && !ct.contains("octet-stream") && !ct.contains("binary")) {
+                closeStreamQuietly(response.body());
+                return CompletableFuture.failedFuture(new RuntimeException("The URL did not return a valid image MIME type: " + ct));
+            }
         }
 
         BoundedInputStream boundedStream = new BoundedInputStream(response.body(), maxFileSizeBytes);

@@ -43,6 +43,8 @@ public class Emage extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        javax.imageio.ImageIO.scanForPlugins();
+
         this.virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
         this.boundedIoExecutor = Executors.newFixedThreadPool(Math.max(2, Runtime.getRuntime().availableProcessors() / 2), r -> {
             Thread t = new Thread(r, "Emage-IO-Worker");
