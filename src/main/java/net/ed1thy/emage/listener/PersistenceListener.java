@@ -132,7 +132,6 @@ public class PersistenceListener implements Listener {
 
                 for (int i = 0; i < loadedFrames.size(); i++) {
                     ItemFrame frame = loadedFrames.get(i);
-                    actualEmageFrames.add(frame.getUniqueId());
 
                     if (!dbExpected.contains(frame.getUniqueId())) {
                         int mapId = loadedMapIds.get(i);
@@ -140,19 +139,6 @@ public class PersistenceListener implements Listener {
                         metaOpt.ifPresent(meta -> {
                             try { repository.addPlacedFrame(meta.syncGroupID(), frame); } catch (Exception ignored) {}
                         });
-                    }
-                }
-
-                for (UUID expected : dbExpected) {
-                    if (!actualEmageFrames.contains(expected)) {
-                        int groupId = repository.getGroupIdByFrameUUID(expected);
-                        repository.removePlacedFrameByUUID(expected);
-
-                        if (groupId != -1 && repository.countPlacedFrames(groupId) == 0) {
-                            flatFileStorage.deleteSyncGroup(groupId);
-                            repository.deleteSyncGroup(groupId);
-                            Bukkit.getScheduler().runTask(plugin, () -> renderManager.unregisterSyncGroup(groupId));
-                        }
                     }
                 }
 
@@ -184,7 +170,7 @@ public class PersistenceListener implements Listener {
 
                         SyncGroup group = renderManager.getSyncGroup(groupId);
                         if (group == null) {
-                            group = new SyncGroup(meta, new CopyOnWriteArrayList<>(groupNodes), flatFileStorage, renderManager.getGlobalFrameCache(), vtExecutor, null);
+                            group = new SyncGroup(meta, new CopyOnWriteArrayList<>(groupNodes), flatFileStorage, renderManager.getGlobalFrameCache(), vtExecutor, null, renderManager.getViewDistance());
                             renderManager.registerSyncGroup(groupId, group);
                         } else {
                             List<FrameNode> toAdd = new ArrayList<>();

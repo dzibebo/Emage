@@ -273,7 +273,7 @@ public class CommandRegistry {
                                     }
 
                                     if (!nodes.isEmpty()) {
-                                        SyncGroup group = new SyncGroup(meta, new CopyOnWriteArrayList<>(nodes), flatFileStorage, renderManager.getGlobalFrameCache(), vtExecutor, null);
+                                        SyncGroup group = new SyncGroup(meta, new CopyOnWriteArrayList<>(nodes), flatFileStorage, renderManager.getGlobalFrameCache(), vtExecutor, null, renderManager.getViewDistance());
                                         renderManager.registerSyncGroup(groupId, group);
                                         restoredGroups++;
                                     }
@@ -567,7 +567,7 @@ public class CommandRegistry {
 
             SyncGroup group = renderManager.getSyncGroup(meta.syncGroupID());
             if (group == null) {
-                group = new SyncGroup(meta, new CopyOnWriteArrayList<>(nodes), flatFileStorage, renderManager.getGlobalFrameCache(), vtExecutor, baseFrame);
+                group = new SyncGroup(meta, new CopyOnWriteArrayList<>(nodes), flatFileStorage, renderManager.getGlobalFrameCache(), vtExecutor, baseFrame, renderManager.getViewDistance());
                 final SyncGroup finalGroup = group;
                 Bukkit.getScheduler().runTaskLater(plugin, () -> {
                     renderManager.registerSyncGroup(meta.syncGroupID(), finalGroup);

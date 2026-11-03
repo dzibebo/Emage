@@ -14,6 +14,7 @@ import org.bukkit.util.Vector;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -49,15 +50,26 @@ public class SyncGroup {
     private int[] frameDelays;
 
     private volatile double minX, minY, minZ, maxX, maxY, maxZ;
+    private final double viewDistance;
+    private final double viewDistanceSquared;
 
     public SyncGroup(@NotNull MapMetadata metadata, @NotNull List<FrameNode> nodes,
                      @NotNull FlatFileStorage flatFileStorage, @NotNull Cache<Long, MapFrameUpdate> frameCache,
                      @NotNull ExecutorService vtExecutor, @Nullable Map<Integer, MapFrameUpdate> preloadedBaseFrames) {
+        this(metadata, nodes, flatFileStorage, frameCache, vtExecutor, preloadedBaseFrames, 96.0);
+    }
+
+    public SyncGroup(@NotNull MapMetadata metadata, @NotNull List<FrameNode> nodes,
+                     @NotNull FlatFileStorage flatFileStorage, @NotNull Cache<Long, MapFrameUpdate> frameCache,
+                     @NotNull ExecutorService vtExecutor, @Nullable Map<Integer, MapFrameUpdate> preloadedBaseFrames,
+                     double viewDistance) {
         this.metadata = metadata;
         this.nodes = nodes;
         this.flatFileStorage = flatFileStorage;
         this.frameCache = frameCache;
         this.vtExecutor = vtExecutor;
+        this.viewDistance = viewDistance > 0 ? viewDistance : 96.0;
+        this.viewDistanceSquared = this.viewDistance * this.viewDistance;
 
         if (preloadedBaseFrames != null) {
             for (Map.Entry<Integer, MapFrameUpdate> entry : preloadedBaseFrames.entrySet()) {
@@ -67,6 +79,8 @@ public class SyncGroup {
                 long key = (0L << 32) | (entry.getKey() & 0xFFFFFFFFL);
                 frameCache.put(key, update);
             }
+        } else {
+            loadingFrames.add(0);
         }
 
         CompletableFuture.runAsync(() -> {
@@ -86,7 +100,12 @@ public class SyncGroup {
                 if (frameDelays == null || frameDelays.length == 0) {
                     frameDelays = new int[] { metadata.delayMs() };
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            } finally {
+                if (preloadedBaseFrames == null) {
+                    loadingFrames.remove(0);
+                }
+            }
         }, vtExecutor);
 
         if (frameDelays == null) {
@@ -146,16 +165,14 @@ public class SyncGroup {
     public void checkPlayerVisibility(@NotNull Player player) {
         if (world == null || centerLocs.isEmpty() || !player.getWorld().equals(world)) {
             visiblePlayers.remove(player.getUniqueId());
-            initializedUsers.remove(player.getUniqueId());
             return;
         }
 
         Location pLoc = player.getLocation();
-        if (pLoc.getX() < minX - 32 || pLoc.getX() > maxX + 32 ||
-                pLoc.getY() < minY - 32 || pLoc.getY() > maxY + 32 ||
-                pLoc.getZ() < minZ - 32 || pLoc.getZ() > maxZ + 32) {
+        if (pLoc.getX() < minX - viewDistance || pLoc.getX() > maxX + viewDistance ||
+                pLoc.getY() < minY - viewDistance || pLoc.getY() > maxY + viewDistance ||
+                pLoc.getZ() < minZ - viewDistance || pLoc.getZ() > maxZ + viewDistance) {
             visiblePlayers.remove(player.getUniqueId());
-            initializedUsers.remove(player.getUniqueId());
             return;
         }
 
@@ -164,14 +181,13 @@ public class SyncGroup {
 
         boolean inRange = false;
         for (Location center : centerLocs) {
-            if (center.distanceSquared(pLoc) <= 1024.0) {
+            if (center.distanceSquared(pLoc) <= viewDistanceSquared) {
                 inRange = true;
                 break;
             }
         }
         if (!inRange) {
             visiblePlayers.remove(uuid);
-            initializedUsers.remove(uuid);
             return;
         }
 
@@ -202,27 +218,30 @@ public class SyncGroup {
     private boolean calculateVisibilityAsync(Location eyeLoc, Vector lookDir) {
         Vector eye = eyeLoc.toVector();
 
-        Vector[] corners = new Vector[] {
-                new Vector(minX, minY, minZ),
-                new Vector(maxX, minY, minZ),
-                new Vector(minX, maxY, minZ),
-                new Vector(maxX, maxY, minZ),
-                new Vector(minX, minY, maxZ),
-                new Vector(maxX, minY, maxZ),
-                new Vector(minX, maxY, maxZ),
-                new Vector(maxX, maxY, maxZ)
-        };
+        List<Vector> testPoints = new ArrayList<>(10 + centerLocs.size());
+        testPoints.add(new Vector(minX, minY, minZ));
+        testPoints.add(new Vector(maxX, minY, minZ));
+        testPoints.add(new Vector(minX, maxY, minZ));
+        testPoints.add(new Vector(maxX, maxY, minZ));
+        testPoints.add(new Vector(minX, minY, maxZ));
+        testPoints.add(new Vector(maxX, minY, maxZ));
+        testPoints.add(new Vector(minX, maxY, maxZ));
+        testPoints.add(new Vector(maxX, maxY, maxZ));
+        testPoints.add(new Vector((minX + maxX) / 2.0, (minY + maxY) / 2.0, (minZ + maxZ) / 2.0));
+        for (Location loc : centerLocs) {
+            testPoints.add(loc.toVector());
+        }
 
-        for (Vector corner : corners) {
-            Vector toCorner = corner.clone().subtract(eye);
-            double distSq = toCorner.lengthSquared();
+        for (Vector point : testPoints) {
+            Vector toPoint = point.clone().subtract(eye);
+            double distSq = toPoint.lengthSquared();
 
-            if (distSq < 9.0) return true;
+            if (distSq < 25.0) return true;
 
-            if (distSq > 1024.0) continue;
+            if (distSq > viewDistanceSquared) continue;
 
-            toCorner.normalize();
-            double dot = toCorner.dot(lookDir);
+            toPoint.normalize();
+            double dot = toPoint.dot(lookDir);
 
             if (dot > 0.0) {
                 return true;
@@ -251,8 +270,18 @@ public class SyncGroup {
 
         boolean missingCurrent = false;
         for (FrameNode node : nodes) {
-            if (frameCache.getIfPresent(((long) currentFrameIndex << 32) | (node.getMapID() & 0xFFFFFFFFL)) == null) {
-                missingCurrent = true; break;
+            long cacheKey = ((long) currentFrameIndex << 32) | (node.getMapID() & 0xFFFFFFFFL);
+            MapFrameUpdate update = frameCache.getIfPresent(cacheKey);
+            if (update == null || update.isFreed()) {
+                if (currentFrameIndex == 0) {
+                    MapFrameUpdate base = baseFrames.get(node.getMapID());
+                    if (base != null && !base.isFreed()) {
+                        frameCache.put(cacheKey, base);
+                        continue;
+                    }
+                }
+                missingCurrent = true;
+                break;
             }
         }
 
@@ -266,7 +295,13 @@ public class SyncGroup {
                         for (FrameNode node : nodes) {
                             long key = ((long) cFrame << 32) | (node.getMapID() & 0xFFFFFFFFL);
                             MapFrameUpdate update = bundled.get(node.getMapID());
-                            frameCache.put(key, update != null ? update : new MapFrameUpdate(new DeltaFrame[0]));
+                            if (update != null && !update.isFreed()) {
+                                frameCache.put(key, update);
+                                if (cFrame == 0) {
+                                    baseFrames.put(node.getMapID(), update);
+                                    update.retain();
+                                }
+                            }
                         }
                     } catch (Exception ignored) {
                     } finally {
@@ -277,17 +312,18 @@ public class SyncGroup {
             return;
         }
 
-        Set<UUID> newlyInitialized = new HashSet<>();
+        Set<UUID> usersFullySent = new HashSet<>(visiblePlayers);
 
         for (FrameNode node : nodes) {
             long cacheKey = ((long) currentFrameIndex << 32) | (node.getMapID() & 0xFFFFFFFFL);
             MapFrameUpdate update = frameCache.getIfPresent(cacheKey);
-            if (update != null && update.isFreed()) {
-                frameCache.invalidate(cacheKey);
-                update = null;
+            if (update == null || update.isFreed()) {
+                if (currentFrameIndex == 0) {
+                    update = baseFrames.get(node.getMapID());
+                }
             }
 
-            if (update != null) {
+            if (update != null && !update.isFreed()) {
                 for (UUID uuid : visiblePlayers) {
                     boolean isNewUser = !initializedUsers.contains(uuid);
 
@@ -304,7 +340,7 @@ public class SyncGroup {
                                 base = baseFrames.get(node.getMapID());
                             } catch (Exception ignored) {}
                         }
-                        if (base != null) {
+                        if (base != null && !base.isFreed()) {
                             for (DeltaFrame subChunk : base.parts()) {
                                 com.github.retrooper.packetevents.wrapper.PacketWrapper<?> pkt = sender.createMapPacket(subChunk);
                                 if (pkt != null) {
@@ -322,12 +358,13 @@ public class SyncGroup {
                             }
                         }
                     }
-                    newlyInitialized.add(uuid);
                 }
+            } else {
+                usersFullySent.clear();
             }
         }
 
-        initializedUsers.addAll(newlyInitialized);
+        initializedUsers.addAll(usersFullySent);
 
         lastTickTime = currentTimeMillis;
 

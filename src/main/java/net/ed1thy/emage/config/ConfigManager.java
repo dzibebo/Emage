@@ -10,6 +10,7 @@ public class ConfigManager {
     private FileConfiguration config;
 
     public int maxPacketsPerTick;
+    public int viewDistanceBlocks;
 
     public String dbFileName;
     public int dbPoolSize;
@@ -46,6 +47,7 @@ public class ConfigManager {
         this.config = plugin.getConfig();
 
         this.maxPacketsPerTick = config.getInt("performance.max-packets-per-tick", 64);
+        this.viewDistanceBlocks = config.getInt("performance.view-distance-blocks", 96);
 
         this.dbFileName = config.getString("storage.database.file-name", "emage_meta.db");
         this.dbPoolSize = config.getInt("storage.database.pool-size", 2);

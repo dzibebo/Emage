@@ -1,5 +1,6 @@
 performance:
   max-packets-per-tick: 64
+  view-distance-blocks: 96
 
 storage:
   database:

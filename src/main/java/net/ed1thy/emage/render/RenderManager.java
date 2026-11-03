@@ -32,6 +32,7 @@ public class RenderManager {
     private final PacketSender packetSender;
 
     private final int maxPacketsPerTick;
+    private final double viewDistance;
 
     private static final int MAX_PACKETS_PER_PLAYER_PER_TICK = 100;
     private static final int MAX_BYTES_PER_PLAYER_PER_TICK = 100_000;
@@ -51,6 +52,7 @@ public class RenderManager {
         this.chunkViewerTracker = chunkViewerTracker;
         this.packetSender = packetSender;
         this.maxPacketsPerTick = configManager.maxPacketsPerTick;
+        this.viewDistance = configManager.viewDistanceBlocks > 0 ? (double) configManager.viewDistanceBlocks : 96.0;
         this.executorService = scheduledExecutor;
 
         long maxBytes = (long) configManager.cacheMaxMemoryMb * 1024L * 1024L;
@@ -68,6 +70,10 @@ public class RenderManager {
 
     public Cache<Long, MapFrameUpdate> getGlobalFrameCache() {
         return globalFrameCache;
+    }
+
+    public double getViewDistance() {
+        return viewDistance;
     }
 
     public void start() {
