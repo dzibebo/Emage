@@ -42,8 +42,6 @@ public class SyncGroup {
     private final Map<UUID, Set<Integer>> initializedMapsPerUser = new ConcurrentHashMap<>();
     private final Set<UUID> visiblePlayers = ConcurrentHashMap.newKeySet();
 
-    private final Set<UUID> pendingVisibilityChecks = ConcurrentHashMap.newKeySet();
-
     private final List<Location> centerLocs = new CopyOnWriteArrayList<>();
     private volatile World world;
 
@@ -158,7 +156,6 @@ public class SyncGroup {
 
         visiblePlayers.removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
         initializedMapsPerUser.keySet().removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
-        pendingVisibilityChecks.removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
     }
 
     public void checkPlayerVisibility(@NotNull Player player) {
@@ -176,7 +173,6 @@ public class SyncGroup {
         }
 
         UUID uuid = player.getUniqueId();
-        if (pendingVisibilityChecks.contains(uuid)) return;
 
         boolean inRange = false;
         for (Location center : centerLocs) {
@@ -190,28 +186,19 @@ public class SyncGroup {
             return;
         }
 
-        Location eyeLoc = player.getEyeLocation().clone();
-        Vector lookDir = eyeLoc.getDirection().clone();
+        Location eyeLoc = player.getEyeLocation();
+        Vector lookDir = eyeLoc.getDirection();
 
-        pendingVisibilityChecks.add(uuid);
-
-        CompletableFuture.runAsync(() -> {
-            boolean canSee = calculateVisibilityAsync(eyeLoc, lookDir);
-
-            if (canSee) {
-                visiblePlayers.add(uuid);
-            } else {
-                visiblePlayers.remove(uuid);
-            }
-
-            pendingVisibilityChecks.remove(uuid);
-        }, vtExecutor);
+        if (calculateVisibility(eyeLoc, lookDir)) {
+            visiblePlayers.add(uuid);
+        } else {
+            visiblePlayers.remove(uuid);
+        }
     }
 
     public void onPlayerQuit(@NotNull UUID uuid) {
         visiblePlayers.remove(uuid);
         initializedMapsPerUser.remove(uuid);
-        pendingVisibilityChecks.remove(uuid);
     }
 
     @Nullable
@@ -232,7 +219,7 @@ public class SyncGroup {
         }
     }
 
-    private boolean calculateVisibilityAsync(Location eyeLoc, Vector lookDir) {
+    private boolean calculateVisibility(Location eyeLoc, Vector lookDir) {
         Vector eye = eyeLoc.toVector();
 
         List<Vector> testPoints = new ArrayList<>(10 + centerLocs.size());

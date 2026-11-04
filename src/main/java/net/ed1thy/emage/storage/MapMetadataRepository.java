@@ -8,7 +8,9 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 
@@ -17,9 +19,60 @@ public class MapMetadataRepository {
     private final DatabaseManager dbManager;
     private final ExecutorService dbWriteExecutor;
 
+    private final ConcurrentHashMap<Integer, MapMetadata> metadataByMapIdCache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, MapMetadata> metadataByGroupIdCache = new ConcurrentHashMap<>();
+    private final Set<UUID> knownPlacedFrameUuids = ConcurrentHashMap.newKeySet();
+
     public MapMetadataRepository(@NotNull DatabaseManager dbManager, @NotNull ExecutorService dbWriteExecutor) {
         this.dbManager = dbManager;
         this.dbWriteExecutor = dbWriteExecutor;
+    }
+
+    public void loadAllToCache() {
+        String sql = "SELECT m.*, ids.map_id FROM emage_metadata m JOIN emage_maps ids ON m.sync_group_id = ids.sync_group_id";
+        try (Connection conn = dbManager.getConnection(); Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                long created;
+                try {
+                    created = rs.getLong("created_at");
+                } catch (Exception ignored) {
+                    created = 0L;
+                }
+                final long createdAt = created;
+                int syncGroupId = rs.getInt("sync_group_id");
+                MapMetadata meta = metadataByGroupIdCache.computeIfAbsent(syncGroupId, id -> {
+                    try {
+                        return new MapMetadata(
+                                id, UUID.fromString(rs.getString("creator_uuid")),
+                                rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
+                                rs.getInt("total_frames"), rs.getInt("delay_ms"), createdAt
+                        );
+                    } catch (SQLException e) {
+                        return null;
+                    }
+                });
+                if (meta != null) {
+                    int mapId = rs.getInt("map_id");
+                    metadataByMapIdCache.put(mapId, meta);
+                }
+            }
+        } catch (SQLException ignored) {}
+
+        try (Connection conn = dbManager.getConnection(); Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery("SELECT frame_uuid FROM emage_placed_frames")) {
+            while (rs.next()) {
+                try {
+                    knownPlacedFrameUuids.add(UUID.fromString(rs.getString(1)));
+                } catch (Exception ignored) {}
+            }
+        } catch (SQLException ignored) {}
+    }
+
+    public boolean isPlacedFrameKnown(@NotNull UUID uuid) {
+        return knownPlacedFrameUuids.contains(uuid);
+    }
+
+    public void markPlacedFrameKnown(@NotNull UUID uuid) {
+        knownPlacedFrameUuids.add(uuid);
     }
 
     public void shutdown() {}
@@ -47,6 +100,9 @@ public class MapMetadataRepository {
     }
 
     public void addPlacedFrames(int syncGroupId, List<ItemFrame> frames) throws SQLException {
+        for (ItemFrame frame : frames) {
+            knownPlacedFrameUuids.add(frame.getUniqueId());
+        }
         executeWrite(() -> {
             String sql = "INSERT OR REPLACE INTO emage_placed_frames (frame_uuid, sync_group_id, world_uuid, chunk_x, chunk_z) VALUES (?, ?, ?, ?, ?)";
             try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -63,11 +119,25 @@ public class MapMetadataRepository {
         });
     }
 
+    public void addPlacedFramesAsync(int syncGroupId, List<ItemFrame> frames) {
+        for (ItemFrame frame : frames) {
+            knownPlacedFrameUuids.add(frame.getUniqueId());
+        }
+        dbWriteExecutor.submit(() -> {
+            try {
+                addPlacedFrames(syncGroupId, frames);
+            } catch (Exception ignored) {}
+        });
+    }
+
     public void addPlacedFrame(int syncGroupId, ItemFrame frame) throws SQLException {
         addPlacedFrames(syncGroupId, java.util.Collections.singletonList(frame));
     }
 
     public void removePlacedFrames(List<ItemFrame> frames) throws SQLException {
+        for (ItemFrame frame : frames) {
+            knownPlacedFrameUuids.remove(frame.getUniqueId());
+        }
         executeWrite(() -> {
             String sql = "DELETE FROM emage_placed_frames WHERE frame_uuid = ?";
             try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -81,12 +151,22 @@ public class MapMetadataRepository {
     }
 
     public void removePlacedFrameByUUID(UUID frameUuid) throws SQLException {
+        knownPlacedFrameUuids.remove(frameUuid);
         executeWrite(() -> {
             String sql = "DELETE FROM emage_placed_frames WHERE frame_uuid = ?";
             try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
                 ps.setString(1, frameUuid.toString());
                 ps.executeUpdate();
             }
+        });
+    }
+
+    public void removePlacedFrameByUUIDAsync(@NotNull UUID uuid) {
+        knownPlacedFrameUuids.remove(uuid);
+        dbWriteExecutor.submit(() -> {
+            try {
+                removePlacedFrameByUUID(uuid);
+            } catch (Exception ignored) {}
         });
     }
 
@@ -157,8 +237,11 @@ public class MapMetadataRepository {
                     ps.setLong(7, now);
                     ps.executeUpdate();
                     try (ResultSet rs = ps.getGeneratedKeys()) {
-                        if (rs.next()) return new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs, now);
-                        else throw new SQLException("Failed to retrieve auto-generated sync_group_id from SQLite.");
+                        if (rs.next()) {
+                            MapMetadata meta = new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs, now);
+                            metadataByGroupIdCache.put(meta.syncGroupID(), meta);
+                            return meta;
+                        } else throw new SQLException("Failed to retrieve auto-generated sync_group_id from SQLite.");
                     }
                 }
             }).get();
@@ -221,6 +304,14 @@ public class MapMetadataRepository {
                     }
                 }
                 if (allocatedIds.size() != amount) throw new SQLException("Failed to retrieve all auto-generated map IDs.");
+
+                MapMetadata meta = metadataByGroupIdCache.get(syncGroupId);
+                if (meta != null) {
+                    for (int mapId : allocatedIds) {
+                        metadataByMapIdCache.put(mapId, meta);
+                    }
+                }
+
                 return allocatedIds;
             }).get();
         } catch (InterruptedException e) {
@@ -234,6 +325,11 @@ public class MapMetadataRepository {
 
     @NotNull
     public Optional<MapMetadata> getMetadataByMapId(int mapId) throws SQLException {
+        MapMetadata cached = metadataByMapIdCache.get(mapId);
+        if (cached != null) {
+            return Optional.of(cached);
+        }
+
         String sql = "SELECT m.* FROM emage_metadata m JOIN emage_maps ids ON m.sync_group_id = ids.sync_group_id WHERE ids.map_id = ?";
         try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, mapId);
@@ -241,11 +337,14 @@ public class MapMetadataRepository {
                 if (rs.next()) {
                     long createdAt = 0L;
                     try { createdAt = rs.getLong("created_at"); } catch (Exception ignored) {}
-                    return Optional.of(new MapMetadata(
+                    MapMetadata meta = new MapMetadata(
                             rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
                             rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
                             rs.getInt("total_frames"), rs.getInt("delay_ms"), createdAt
-                    ));
+                    );
+                    metadataByMapIdCache.put(mapId, meta);
+                    metadataByGroupIdCache.put(meta.syncGroupID(), meta);
+                    return Optional.of(meta);
                 }
             }
         }
@@ -280,8 +379,11 @@ public class MapMetadataRepository {
                     ps.setLong(8, now);
                     ps.executeUpdate();
                     try (ResultSet rs = ps.getGeneratedKeys()) {
-                        if (rs.next()) return new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs, now);
-                        else throw new SQLException("Failed to retrieve auto-generated ID.");
+                        if (rs.next()) {
+                            MapMetadata meta = new MapMetadata(rs.getInt(1), creatorUuid, sourceUrl, columns, rows, totalFrames, delayMs, now);
+                            metadataByGroupIdCache.put(meta.syncGroupID(), meta);
+                            return meta;
+                        } else throw new SQLException("Failed to retrieve auto-generated ID.");
                     }
                 }
             }).get();
@@ -305,11 +407,13 @@ public class MapMetadataRepository {
                 if (rs.next()) {
                     long createdAt = 0L;
                     try { createdAt = rs.getLong("created_at"); } catch (Exception ignored) {}
-                    return Optional.of(new MapMetadata(
+                    MapMetadata meta = new MapMetadata(
                             rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
                             rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
                             rs.getInt("total_frames"), rs.getInt("delay_ms"), createdAt
-                    ));
+                    );
+                    metadataByGroupIdCache.put(meta.syncGroupID(), meta);
+                    return Optional.of(meta);
                 }
             }
         }
@@ -327,11 +431,13 @@ public class MapMetadataRepository {
                 if (rs.next()) {
                     long createdAt = 0L;
                     try { createdAt = rs.getLong("created_at"); } catch (Exception ignored) {}
-                    return Optional.of(new MapMetadata(
+                    MapMetadata meta = new MapMetadata(
                             rs.getInt("sync_group_id"), UUID.fromString(rs.getString("creator_uuid")),
                             rs.getString("source_url"), rs.getInt("columns"), rs.getInt("rows"),
                             rs.getInt("total_frames"), rs.getInt("delay_ms"), createdAt
-                    ));
+                    );
+                    metadataByGroupIdCache.put(meta.syncGroupID(), meta);
+                    return Optional.of(meta);
                 }
             }
         }
@@ -352,6 +458,8 @@ public class MapMetadataRepository {
     }
 
     public void deleteSyncGroup(int syncGroupId) throws SQLException {
+        metadataByGroupIdCache.remove(syncGroupId);
+        metadataByMapIdCache.values().removeIf(m -> m.syncGroupID() == syncGroupId);
         executeWrite(() -> {
             String sql = "DELETE FROM emage_metadata WHERE sync_group_id = ?";
             try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {

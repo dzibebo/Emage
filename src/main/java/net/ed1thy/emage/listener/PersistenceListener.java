@@ -132,104 +132,111 @@ public class PersistenceListener implements Listener {
 
         if (loadedFrames.isEmpty()) return;
 
-        UUID worldUuid = chunk.getWorld().getUID();
+        Map<Integer, List<FrameNode>> nodesByGroup = new HashMap<>();
+        Map<Integer, MapMetadata> metaByGroup = new HashMap<>();
+        List<ItemFrame> brokenFrames = new ArrayList<>();
+        List<ItemFrame> unknownFrames = new ArrayList<>();
+
+        for (int i = 0; i < loadedFrames.size(); i++) {
+            ItemFrame frame = loadedFrames.get(i);
+            FrameNode node = createdNodes.get(i);
+            int mapId = node.getMapID();
+
+            Optional<MapMetadata> metaOpt;
+            try {
+                metaOpt = repository.getMetadataByMapId(mapId);
+            } catch (Exception e) {
+                metaOpt = Optional.empty();
+            }
+
+            if (metaOpt.isPresent() && flatFileStorage.groupExists(metaOpt.get().syncGroupID())) {
+                MapMetadata meta = metaOpt.get();
+                nodesByGroup.computeIfAbsent(meta.syncGroupID(), k -> new ArrayList<>()).add(node);
+                metaByGroup.putIfAbsent(meta.syncGroupID(), meta);
+
+                if (!repository.isPlacedFrameKnown(frame.getUniqueId())) {
+                    unknownFrames.add(frame);
+                }
+            } else {
+                brokenFrames.add(frame);
+            }
+        }
+
+        List<SyncGroup> touchedGroups = new ArrayList<>();
+        for (Map.Entry<Integer, List<FrameNode>> entry : nodesByGroup.entrySet()) {
+            int groupId = entry.getKey();
+            List<FrameNode> groupNodes = entry.getValue();
+            MapMetadata meta = metaByGroup.get(groupId);
+            if (meta == null) continue;
+
+            SyncGroup group = renderManager.getSyncGroup(groupId);
+            if (group == null) {
+                group = new SyncGroup(meta, new CopyOnWriteArrayList<>(groupNodes), flatFileStorage, renderManager.getGlobalFrameCache(), vtExecutor, null, renderManager.getViewDistance());
+                renderManager.registerSyncGroup(groupId, group);
+                touchedGroups.add(group);
+            } else {
+                List<FrameNode> toAdd = new ArrayList<>();
+                for (FrameNode node : groupNodes) {
+                    boolean exists = false;
+                    for (FrameNode existing : group.getNodes()) {
+                        if (existing.getFrameUUID().equals(node.getFrameUUID())) {
+                            exists = true;
+                            break;
+                        }
+                    }
+                    if (!exists) {
+                        toAdd.add(node);
+                    }
+                }
+                if (!toAdd.isEmpty()) {
+                    group.addNewWall(toAdd);
+                }
+                touchedGroups.add(group);
+            }
+        }
+
         int cx = chunk.getX();
         int cz = chunk.getZ();
-
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            try {
-                List<UUID> dbExpected = repository.getPlacedFramesInChunk(worldUuid, cx, cz);
-
-                for (int i = 0; i < loadedFrames.size(); i++) {
-                    ItemFrame frame = loadedFrames.get(i);
-
-                    if (!dbExpected.contains(frame.getUniqueId())) {
-                        int mapId = loadedMapIds.get(i);
-                        Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(mapId);
-                        metaOpt.ifPresent(meta -> {
-                            try { repository.addPlacedFrame(meta.syncGroupID(), frame); } catch (Exception ignored) {}
-                        });
+        for (Player player : chunk.getWorld().getPlayers()) {
+            int pcx = player.getLocation().getBlockX() >> 4;
+            int pcz = player.getLocation().getBlockZ() >> 4;
+            if (Math.abs(pcx - cx) <= 8 && Math.abs(pcz - cz) <= 8) {
+                com.github.retrooper.packetevents.protocol.player.User user = chunkTrackerListener.getTracker().getUser(player.getUniqueId());
+                if (user != null) {
+                    for (FrameNode node : createdNodes) {
+                        renderManager.sendNodeToUser(user, node);
                     }
                 }
-
-                Map<Integer, List<FrameNode>> nodesByGroup = new HashMap<>();
-                Map<Integer, MapMetadata> metaByGroup = new HashMap<>();
-                List<ItemFrame> brokenFrames = new ArrayList<>();
-
-                for (int i = 0; i < loadedFrames.size(); i++) {
-                    ItemFrame frame = loadedFrames.get(i);
-                    FrameNode node = createdNodes.get(i);
-                    int mapId = node.getMapID();
-
-                    Optional<MapMetadata> metaOpt = repository.getMetadataByMapId(mapId);
-                    if (metaOpt.isPresent() && flatFileStorage.groupExists(metaOpt.get().syncGroupID())) {
-                        MapMetadata meta = metaOpt.get();
-                        nodesByGroup.computeIfAbsent(meta.syncGroupID(), k -> new ArrayList<>()).add(node);
-                        metaByGroup.putIfAbsent(meta.syncGroupID(), meta);
-                    } else {
-                        brokenFrames.add(frame);
-                    }
+                for (SyncGroup group : touchedGroups) {
+                    group.checkPlayerVisibility(player);
                 }
-
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    for (Map.Entry<Integer, List<FrameNode>> entry : nodesByGroup.entrySet()) {
-                        int groupId = entry.getKey();
-                        List<FrameNode> groupNodes = entry.getValue();
-                        MapMetadata meta = metaByGroup.get(groupId);
-                        if (meta == null) continue;
-
-                        SyncGroup group = renderManager.getSyncGroup(groupId);
-                        if (group == null) {
-                            group = new SyncGroup(meta, new CopyOnWriteArrayList<>(groupNodes), flatFileStorage, renderManager.getGlobalFrameCache(), vtExecutor, null, renderManager.getViewDistance());
-                            renderManager.registerSyncGroup(groupId, group);
-                        } else {
-                            List<FrameNode> toAdd = new ArrayList<>();
-                            for (FrameNode node : groupNodes) {
-                                boolean exists = false;
-                                for (FrameNode existing : group.getNodes()) {
-                                    if (existing.getFrameUUID().equals(node.getFrameUUID())) {
-                                        exists = true;
-                                        break;
-                                    }
-                                }
-                                if (!exists) {
-                                    toAdd.add(node);
-                                }
-                            }
-                            if (!toAdd.isEmpty()) {
-                                group.addNewWall(toAdd);
-                            }
-                        }
-                    }
-
-                    for (Player player : chunk.getWorld().getPlayers()) {
-                        int pcx = player.getLocation().getBlockX() >> 4;
-                        int pcz = player.getLocation().getBlockZ() >> 4;
-                        if (Math.abs(pcx - cx) <= 8 && Math.abs(pcz - cz) <= 8) {
-                            com.github.retrooper.packetevents.protocol.player.User user = chunkTrackerListener.getTracker().getUser(player.getUniqueId());
-                            if (user != null) {
-                                for (FrameNode node : createdNodes) {
-                                    renderManager.sendNodeToUser(user, node);
-                                }
-                            }
-                        }
-                    }
-
-                    for (ItemFrame frame : brokenFrames) {
-                        frame.getPersistentDataContainer().remove(interactListener.getEmageKey());
-                        frame.getPersistentDataContainer().remove(interactListener.getLoadingKey());
-                        frame.setItem(new ItemStack(Material.AIR));
-                        frame.setVisible(true);
-                        chunkTrackerListener.removeNodeFromCache(frame.getUniqueId(), chunk.getChunkKey());
-                        try {
-                            repository.removePlacedFrameByUUID(frame.getUniqueId());
-                        } catch (Exception ignored) {}
-                    }
-                });
-
-            } catch (Exception e) {
-                plugin.getLogger().warning("Failed GC healing / restore for Emage chunk: " + e.getMessage());
             }
-        });
+        }
+
+        for (ItemFrame frame : brokenFrames) {
+            frame.getPersistentDataContainer().remove(interactListener.getEmageKey());
+            frame.getPersistentDataContainer().remove(interactListener.getLoadingKey());
+            frame.setItem(new ItemStack(Material.AIR));
+            frame.setVisible(true);
+            chunkTrackerListener.removeNodeFromCache(frame.getUniqueId(), chunk.getChunkKey());
+            repository.removePlacedFrameByUUIDAsync(frame.getUniqueId());
+        }
+
+        if (!unknownFrames.isEmpty()) {
+            Map<Integer, List<ItemFrame>> unknownByGroup = new HashMap<>();
+            for (ItemFrame frame : unknownFrames) {
+                Integer mapId = frame.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
+                if (mapId != null) {
+                    try {
+                        repository.getMetadataByMapId(mapId).ifPresent(m -> {
+                            unknownByGroup.computeIfAbsent(m.syncGroupID(), k -> new ArrayList<>()).add(frame);
+                        });
+                    } catch (Exception ignored) {}
+                }
+            }
+            for (Map.Entry<Integer, List<ItemFrame>> entry : unknownByGroup.entrySet()) {
+                repository.addPlacedFramesAsync(entry.getKey(), entry.getValue());
+            }
+        }
     }
 }

@@ -21,10 +21,12 @@ public class DatabaseManager {
         HikariConfig hikariConfig = new HikariConfig();
         hikariConfig.setJdbcUrl("jdbc:sqlite:" + dbFile.getAbsolutePath());
         hikariConfig.setPoolName("Emage-SQLite-Pool");
+        hikariConfig.setMinimumIdle(configManager.dbPoolSize);
         hikariConfig.setMaximumPoolSize(configManager.dbPoolSize);
-        hikariConfig.setConnectionTimeout(5000);
+        hikariConfig.setConnectionTimeout(10000);
         hikariConfig.setIdleTimeout(0);
         hikariConfig.setMaxLifetime(0);
+        hikariConfig.setInitializationFailTimeout(-1);
 
         hikariConfig.addDataSourceProperty("journal_mode", "WAL");
         hikariConfig.addDataSourceProperty("synchronous", "NORMAL");

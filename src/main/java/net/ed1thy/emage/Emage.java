@@ -68,6 +68,7 @@ public class Emage extends JavaPlugin {
         new SchemaInitializer(databaseManager).initialize();
 
         this.mapMetadataRepository = new MapMetadataRepository(databaseManager, boundedIoExecutor);
+        this.mapMetadataRepository.loadAllToCache();
         this.flatFileStorage = new FlatFileStorage(this, boundedIoExecutor);
 
         getServer().getScheduler().runTaskAsynchronously(this, () -> {
