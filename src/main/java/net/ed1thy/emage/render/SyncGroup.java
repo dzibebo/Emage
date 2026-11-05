@@ -14,7 +14,6 @@ import org.bukkit.util.Vector;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +40,7 @@ public class SyncGroup {
 
     private final Map<UUID, Set<Integer>> initializedMapsPerUser = new ConcurrentHashMap<>();
     private final Set<UUID> visiblePlayers = ConcurrentHashMap.newKeySet();
+    private final Set<Integer> ownedMapIds = ConcurrentHashMap.newKeySet();
 
     private final List<Location> centerLocs = new CopyOnWriteArrayList<>();
     private volatile World world;
@@ -110,6 +110,8 @@ public class SyncGroup {
             frameDelays = new int[] { metadata.delayMs() };
         }
 
+        for (FrameNode n : nodes) ownedMapIds.add(n.getMapID());
+
         if (!nodes.isEmpty()) {
             this.world = Bukkit.getWorld(nodes.get(0).getWorldUUID());
             addNewWallBounds(nodes);
@@ -118,6 +120,7 @@ public class SyncGroup {
 
     public void addNewWall(List<FrameNode> newNodes) {
         this.nodes.addAll(newNodes);
+        for (FrameNode n : newNodes) ownedMapIds.add(n.getMapID());
         if (this.world == null && !newNodes.isEmpty()) {
             this.world = Bukkit.getWorld(newNodes.get(0).getWorldUUID());
         }
@@ -206,6 +209,19 @@ public class SyncGroup {
         return baseFrames.get(mapId);
     }
 
+    public boolean ownsMap(int mapId) {
+        return ownedMapIds.contains(mapId);
+    }
+
+    public boolean isNodeInitialized(@NotNull UUID uuid, int mapId) {
+        Set<Integer> sent = initializedMapsPerUser.get(uuid);
+        return sent != null && sent.contains(mapId);
+    }
+
+    public void clearUserState(@NotNull UUID uuid) {
+        initializedMapsPerUser.remove(uuid);
+    }
+
     public void markNodeInitialized(@NotNull UUID uuid, int mapId) {
         initializedMapsPerUser.computeIfAbsent(uuid, k -> ConcurrentHashMap.newKeySet()).add(mapId);
     }
@@ -220,39 +236,34 @@ public class SyncGroup {
     }
 
     private boolean calculateVisibility(Location eyeLoc, Vector lookDir) {
-        Vector eye = eyeLoc.toVector();
+        double ex = eyeLoc.getX(), ey = eyeLoc.getY(), ez = eyeLoc.getZ();
+        double dx = lookDir.getX(), dy = lookDir.getY(), dz = lookDir.getZ();
+        double x0 = minX, y0 = minY, z0 = minZ, x1 = maxX, y1 = maxY, z1 = maxZ;
 
-        List<Vector> testPoints = new ArrayList<>(10 + centerLocs.size());
-        testPoints.add(new Vector(minX, minY, minZ));
-        testPoints.add(new Vector(maxX, minY, minZ));
-        testPoints.add(new Vector(minX, maxY, minZ));
-        testPoints.add(new Vector(maxX, maxY, minZ));
-        testPoints.add(new Vector(minX, minY, maxZ));
-        testPoints.add(new Vector(maxX, minY, maxZ));
-        testPoints.add(new Vector(minX, maxY, maxZ));
-        testPoints.add(new Vector(maxX, maxY, maxZ));
-        testPoints.add(new Vector((minX + maxX) / 2.0, (minY + maxY) / 2.0, (minZ + maxZ) / 2.0));
+        if (pointVisible(x0, y0, z0, ex, ey, ez, dx, dy, dz)
+                || pointVisible(x1, y0, z0, ex, ey, ez, dx, dy, dz)
+                || pointVisible(x0, y1, z0, ex, ey, ez, dx, dy, dz)
+                || pointVisible(x1, y1, z0, ex, ey, ez, dx, dy, dz)
+                || pointVisible(x0, y0, z1, ex, ey, ez, dx, dy, dz)
+                || pointVisible(x1, y0, z1, ex, ey, ez, dx, dy, dz)
+                || pointVisible(x0, y1, z1, ex, ey, ez, dx, dy, dz)
+                || pointVisible(x1, y1, z1, ex, ey, ez, dx, dy, dz)
+                || pointVisible((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0, ex, ey, ez, dx, dy, dz)) {
+            return true;
+        }
         for (Location loc : centerLocs) {
-            testPoints.add(loc.toVector());
+            if (pointVisible(loc.getX(), loc.getY(), loc.getZ(), ex, ey, ez, dx, dy, dz)) return true;
         }
-
-        for (Vector point : testPoints) {
-            Vector toPoint = point.clone().subtract(eye);
-            double distSq = toPoint.lengthSquared();
-
-            if (distSq < 25.0) return true;
-
-            if (distSq > viewDistanceSquared) continue;
-
-            toPoint.normalize();
-            double dot = toPoint.dot(lookDir);
-
-            if (dot > 0.0) {
-                return true;
-            }
-        }
-
         return false;
+    }
+
+    private boolean pointVisible(double px, double py, double pz, double ex, double ey, double ez,
+                                 double dx, double dy, double dz) {
+        double tx = px - ex, ty = py - ey, tz = pz - ez;
+        double distSq = tx * tx + ty * ty + tz * tz;
+        if (distSq < 25.0) return true;
+        if (distSq > viewDistanceSquared) return false;
+        return (tx * dx + ty * dy + tz * dz) > 0.0;
     }
 
     public boolean shouldTick(long currentTimeMillis) {

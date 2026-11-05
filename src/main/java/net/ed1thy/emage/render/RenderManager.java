@@ -17,6 +17,7 @@ import org.bukkit.scheduler.BukkitTask;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -264,35 +265,51 @@ public class RenderManager {
     }
 
     public void sendNodeToUser(@NotNull User user, @NotNull FrameNode node) {
+        UUID uuid = user.getUUID();
+        int mapId = node.getMapID();
+
+        List<SyncGroup> owners = null;
+        for (SyncGroup group : activeGroups.values()) {
+            if (!group.ownsMap(mapId)) continue;
+            if (group.isNodeInitialized(uuid, mapId)) return;
+            if (owners == null) owners = new ArrayList<>(2);
+            owners.add(group);
+        }
+
         queueSpoof(user, node);
 
-        long key = (long) node.getMapID() & 0xFFFFFFFFL;
-        MapFrameUpdate update = globalFrameCache.getIfPresent(key);
+        MapFrameUpdate update = globalFrameCache.getIfPresent((long) mapId & 0xFFFFFFFFL);
         if (update != null && !update.isFreed()) {
-            for (DeltaFrame subChunk : update.parts()) {
-                PacketWrapper<?> pkt = packetSender.createMapPacket(subChunk);
-                if (pkt != null) {
-                    enqueuePacket(user.getUUID(), pkt);
-                }
-            }
-            for (SyncGroup group : activeGroups.values()) {
-                group.markNodeInitialized(user.getUUID(), node.getMapID());
+            enqueueParts(uuid, update);
+            if (owners != null) {
+                for (SyncGroup group : owners) group.markNodeInitialized(uuid, mapId);
             }
             return;
         }
 
-        for (SyncGroup group : activeGroups.values()) {
-            MapFrameUpdate base = group.getBaseFrame(node.getMapID());
+        if (owners == null) return;
+        for (SyncGroup group : owners) {
+            MapFrameUpdate base = group.getBaseFrame(mapId);
             if (base != null && !base.isFreed()) {
-                for (DeltaFrame subChunk : base.parts()) {
-                    PacketWrapper<?> pkt = packetSender.createMapPacket(subChunk);
-                    if (pkt != null) {
-                        enqueuePacket(user.getUUID(), pkt);
-                    }
-                }
-                group.markNodeInitialized(user.getUUID(), node.getMapID());
+                enqueueParts(uuid, base);
+                group.markNodeInitialized(uuid, mapId);
                 return;
             }
+        }
+    }
+
+    private void enqueueParts(UUID uuid, MapFrameUpdate update) {
+        for (DeltaFrame subChunk : update.parts()) {
+            PacketWrapper<?> pkt = packetSender.createMapPacket(subChunk);
+            if (pkt != null) {
+                enqueuePacket(uuid, pkt);
+            }
+        }
+    }
+
+    public void resetUserState(@NotNull UUID uuid) {
+        for (SyncGroup group : activeGroups.values()) {
+            group.clearUserState(uuid);
         }
     }
 

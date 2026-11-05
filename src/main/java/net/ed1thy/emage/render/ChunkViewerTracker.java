@@ -21,18 +21,16 @@ public class ChunkViewerTracker {
     }
 
     public void removeViewer(long chunkKey, UUID playerUUID) {
-        Set<UUID> viewers = chunkViewers.get(chunkKey);
-        if (viewers != null) {
+        chunkViewers.computeIfPresent(chunkKey, (k, viewers) -> {
             viewers.remove(playerUUID);
-            if (viewers.isEmpty()) {
-                chunkViewers.remove(chunkKey);
-            }
-        }
+            return viewers.isEmpty() ? null : viewers;
+        });
     }
 
     public void removeViewerFromAll(UUID playerUUID) {
-        chunkViewers.values().forEach(viewers -> viewers.remove(playerUUID));
-        chunkViewers.values().removeIf(Set::isEmpty);
+        for (Long key : chunkViewers.keySet()) {
+            removeViewer(key, playerUUID);
+        }
         playerUsers.remove(playerUUID);
     }
 

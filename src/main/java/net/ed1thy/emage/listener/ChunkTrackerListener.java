@@ -176,6 +176,7 @@ public class ChunkTrackerListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerChangedWorld(PlayerChangedWorldEvent event) {
         Player player = event.getPlayer();
+        renderManager.resetUserState(player.getUniqueId());
         Bukkit.getScheduler().runTask(plugin, () -> {
             if (player.isOnline()) {
                 User user = tracker.getUser(player.getUniqueId());
