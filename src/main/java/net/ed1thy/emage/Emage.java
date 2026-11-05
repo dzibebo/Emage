@@ -43,7 +43,7 @@ public class Emage extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        javax.imageio.ImageIO.scanForPlugins();
+        registerImageIoPlugins();
 
         this.virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
         this.boundedIoExecutor = Executors.newFixedThreadPool(Math.max(2, Runtime.getRuntime().availableProcessors() / 2), r -> {
@@ -133,7 +133,57 @@ public class Emage extends JavaPlugin {
         );
         commandRegistry.registerCommands();
 
+        preloadClasses();
         getLogger().info("Emage enabled!");
+    }
+
+    private void registerImageIoPlugins() {
+        Thread current = Thread.currentThread();
+        ClassLoader previous = current.getContextClassLoader();
+        try {
+            current.setContextClassLoader(getClass().getClassLoader());
+            javax.imageio.ImageIO.scanForPlugins();
+        } catch (Throwable t) {
+            getLogger().warning("ImageIO plugin scan failed: " + t.getMessage());
+        } finally {
+            current.setContextClassLoader(previous);
+        }
+        try {
+            javax.imageio.spi.IIORegistry registry = javax.imageio.spi.IIORegistry.getDefaultInstance();
+            if (!registry.getServiceProviders(com.twelvemonkeys.imageio.plugins.webp.WebPImageReaderSpi.class, true).hasNext()) {
+                registry.registerServiceProvider(new com.twelvemonkeys.imageio.plugins.webp.WebPImageReaderSpi());
+            }
+        } catch (Throwable t) {
+            getLogger().warning("WebP reader registration failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Eagerly loads every class from the plugin jar so that replacing the jar file
+     * while the server is running cannot cause NoClassDefFoundError later on.
+     */
+    private void preloadClasses() {
+        try {
+            java.net.URL loc = getClass().getProtectionDomain().getCodeSource().getLocation();
+            java.io.File file = new java.io.File(loc.toURI());
+            if (!file.isFile()) return;
+            ClassLoader loader = getClass().getClassLoader();
+            Thread t = new Thread(() -> {
+                try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(file)) {
+                    var entries = zip.entries();
+                    while (entries.hasMoreElements()) {
+                        String name = entries.nextElement().getName();
+                        if (!name.endsWith(".class") || name.startsWith("META-INF/")) continue;
+                        String cn = name.substring(0, name.length() - 6).replace('/', '.');
+                        try {
+                            Class.forName(cn, false, loader);
+                        } catch (Throwable ignored) {}
+                    }
+                } catch (Throwable ignored) {}
+            }, "Emage-Preload");
+            t.setDaemon(true);
+            t.start();
+        } catch (Throwable ignored) {}
     }
 
     @Override
