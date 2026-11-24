@@ -44,6 +44,9 @@ final class RateController {
     private int cleanIndex;
     private volatile long cleanBase;
     private double recoverTo;
+    private long elevatedSince;
+    private long previousSampleNanos;
+    private long sampleIntervalNanos = 100_000_000L;
     private volatile long congestionEvents;
     private volatile long severeEvents;
     private volatile long increaseEvents;
@@ -90,8 +93,18 @@ final class RateController {
     }
 
     void onSample(long now, long rtt, boolean rateLimited, long sentBytesAtProbe, boolean clean) {
+        onSample(now, rtt, rateLimited, sentBytesAtProbe, clean, false);
+    }
+
+    long elevatedFor(long now) {
+        return elevatedSince == 0 ? 0 : now - elevatedSince;
+    }
+
+    void onSample(long now, long rtt, boolean rateLimited, long sentBytesAtProbe, boolean clean, boolean authoritative) {
         lastRtt = rtt;
-        if (clean) recordClean(rtt);
+        if (previousSampleNanos != 0) sampleIntervalNanos = Math.max(50_000_000L, Math.min(5_000_000_000L, now - previousSampleNanos));
+        previousSampleNanos = now;
+        if (clean) recordClean(rtt, authoritative);
         noteDelayForStats(now, rtt);
         long base = recordRtt(now, rtt);
         long clear = cleanBase;
@@ -115,6 +128,12 @@ final class RateController {
         if (slowStart && delayCount >= 2) {
             long fast = Math.min(delay, lastDelays[(delayIndex - 2 + lastDelays.length) % lastDelays.length]);
             if (fast > target) slowStart = false;
+        }
+
+        if (smoothedDelay > target * DECREASE_ABOVE) {
+            if (elevatedSince == 0) elevatedSince = now;
+        } else {
+            elevatedSince = 0;
         }
 
         if (smoothedDelay <= target * DECREASE_ABOVE && rtt > ABSOLUTE_RTT_LIMIT_NANOS) {
@@ -245,8 +264,9 @@ final class RateController {
     private double slowStartGrowth() {
         long base = lastBaseRtt;
         if (base <= 0) return 1.5;
-        double perSample = Math.pow(2.0, 100_000_000.0 / base);
-        return Math.max(1.12, Math.min(1.5, perSample));
+        double interval = sampleIntervalNanos;
+        double perSample = Math.pow(2.0, interval / (base + interval));
+        return Math.max(1.12, Math.min(1.6, perSample));
     }
 
     void cut(double factor) {
@@ -278,9 +298,16 @@ final class RateController {
         return "recent delay above baseline: median " + median + " ms, 90% under " + p90 + " ms, worst " + worst + " ms (last " + count + " samples)";
     }
 
-    private void recordClean(long rtt) {
-        cleanRing[cleanIndex] = rtt;
-        cleanIndex = (cleanIndex + 1) % cleanRing.length;
+    private void recordClean(long rtt, boolean authoritative) {
+        if (authoritative) {
+            java.util.Arrays.fill(cleanRing, rtt);
+            Arrays.fill(rttBuckets, Long.MAX_VALUE);
+            rttBucketStart = 0;
+            elevatedSince = 0;
+        } else {
+            cleanRing[cleanIndex] = rtt;
+            cleanIndex = (cleanIndex + 1) % cleanRing.length;
+        }
         long min = Long.MAX_VALUE;
         for (long value : cleanRing) min = Math.min(min, value);
         cleanBase = min == Long.MAX_VALUE ? 0 : min;

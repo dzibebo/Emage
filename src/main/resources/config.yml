@@ -15,6 +15,9 @@ performance:
   # Hard cap for all players together (bytes per second). Encoding and compressing map packets costs CPU on the
   # network threads, so even many players joining at once cannot starve everyone else's connection.
   max-total-bytes-per-second: 67108864
+  # The sender never goes below this speed (bytes per second), so a player is never starved when the game answers the
+  # ping packets slowly. 32768 B/s = 256 kbit/s. A connection even slower than this gets its pictures a little late
+  # (and its ping up a bit); if you have players on such links lower this value (4096 is the smallest allowed).
   min-bytes-per-second-per-player: 32768
   # How much map data may sit unsent in a player's network buffer at once (bytes). Lower = lower ping impact.
   max-pending-bytes-per-player: 98304

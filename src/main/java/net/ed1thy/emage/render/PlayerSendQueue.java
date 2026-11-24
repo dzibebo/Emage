@@ -34,7 +34,7 @@ final class PlayerSendQueue {
     private static final double BURST_SECONDS = 0.04;
     private static final double BAND_SECONDS = 0.03;
     private static final int MIN_BAND_BYTES = 1536;
-    private static final double INITIAL_RATE = 131_072;
+    private static final double INITIAL_RATE = 16_384;
     private static final double STILL_LOOKAHEAD_SECONDS = 0.35;
     private static final double OPTIMISTIC_CAPACITY = 4_194_304;
 
@@ -48,6 +48,9 @@ final class PlayerSendQueue {
     private static final long IDLE_RESTART_NANOS = 3_000_000_000L;
     private static final long CLEAN_RTT_INTERVAL_NANOS = 30_000_000_000L;
     private static final long CLEAN_RTT_MAX_HOLD_NANOS = 6_000_000_000L;
+    private static final long UNPROBED_BYTES = 24_576L;
+    private static final long CLEAN_RTT_EARLY_NANOS = 6_000_000_000L;
+    private static final long ELEVATED_TRIGGER_NANOS = 3_000_000_000L;
 
     @SuppressWarnings("unchecked")
     private final Queue<DeltaFrame>[] tiers = new Queue[TIERS];
@@ -110,7 +113,7 @@ final class PlayerSendQueue {
                 Math.max(this.minRate, tuning.maxBytesPerSecond()),
                 initialRate(tuning),
                 Math.max(20, tuning.targetDelayMs()) * 1_000_000L);
-        this.tokens = MAP_PACKET_BYTES;
+        this.tokens = 2048;
         this.animBudget = ANIMATION_TARGET_SECONDS * capacityEstimate();
     }
 
@@ -380,6 +383,7 @@ final class PlayerSendQueue {
         }
 
         flushBytes = 0;
+        if (!probeChecked) serviceProbe(transport, now);
         int sent = (isEmpty() || cleanPhase != 0) ? 0 : sendPending(transport, budget, now);
         double alpha = 1.0 - Math.exp(-Math.max(dt, 0.001) / 2.0);
         sentRateEwma += (flushBytes / Math.max(dt, 0.001) - sentRateEwma) * alpha;
@@ -391,6 +395,7 @@ final class PlayerSendQueue {
     }
 
     private int sendPending(Transport transport, SendBudget budget, long now) {
+        if (!everSampled && probeWanted && !probeDisabled && probeTimeouts == 0 && totalSentBytes >= UNPROBED_BYTES) return 0;
         boolean writable = transport.isWritable();
         boolean probing = probeWorking(now);
         long cap = probing ? Math.max(pendingCap, (long) (controller.rate() * 0.06)) : pendingCap;
@@ -493,7 +498,7 @@ final class PlayerSendQueue {
             busyRttEwma = busySamples == 0 ? sample.rtt() : busyRttEwma + (sample.rtt() - busyRttEwma) * 0.05;
             busySamples++;
         }
-        controller.onSample(now, sample.rtt(), now - lastLimitedNanos < 400_000_000L, sample.sentBytes(), sample.clean());
+        controller.onSample(now, sample.rtt(), now - lastLimitedNanos < 400_000_000L, sample.sentBytes(), sample.clean(), sample.clean() && cleanPhase != 0);
         if (sample.clean()) {
             lastCleanNanos = now;
             cleanPhase = 0;
@@ -502,8 +507,9 @@ final class PlayerSendQueue {
 
     private void manageCleanProbe(long now) {
         if (cleanPhase == 0) {
-            if (probeWorking(now) && !isEmpty() && now - lastSendNanos < ACTIVE_WINDOW_NANOS
-                    && now - lastCleanNanos > CLEAN_RTT_INTERVAL_NANOS) {
+            boolean due = now - lastCleanNanos > CLEAN_RTT_INTERVAL_NANOS
+                    || (now - lastCleanNanos > CLEAN_RTT_EARLY_NANOS && controller.elevatedFor(now) > ELEVATED_TRIGGER_NANOS);
+            if (probeWorking(now) && !isEmpty() && now - lastSendNanos < ACTIVE_WINDOW_NANOS && due) {
                 cleanPhase = 1;
                 cleanPhaseStart = now;
                 cleanHolds++;
