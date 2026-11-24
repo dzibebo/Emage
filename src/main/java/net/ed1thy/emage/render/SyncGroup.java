@@ -47,6 +47,8 @@ public class SyncGroup {
     private double servedBytes;
     private volatile double focusWeight = 1.0;
     private final Set<UUID> frozenViewers = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, double[]> throttles = new ConcurrentHashMap<>();
+    static volatile boolean scatterOrder = true;
     private long servedStamp;
     private long tickNowMillis;
 
@@ -321,6 +323,32 @@ public class SyncGroup {
         return isAnimating(uuid);
     }
 
+    public void setAllowanceFor(@NotNull UUID uuid, double bytesPerSecond) {
+        if (bytesPerSecond <= 0) {
+            throttles.remove(uuid);
+            return;
+        }
+        double[] throttle = throttles.computeIfAbsent(uuid, k -> new double[]{bytesPerSecond, bytesPerSecond * 0.25, 0});
+        throttle[0] = bytesPerSecond;
+    }
+
+    private long throttleAllowed(UUID uuid) {
+        double[] throttle = throttles.get(uuid);
+        if (throttle == null) return Long.MAX_VALUE;
+        long now = tickNowMillis;
+        if (throttle[2] != 0) {
+            double elapsed = Math.max(0L, Math.min(500L, now - (long) throttle[2]));
+            throttle[1] = Math.min(throttle[1] + throttle[0] * elapsed / 1000.0, throttle[0] * 0.3 + 32768);
+        }
+        throttle[2] = now;
+        return throttle[1] > 0 ? (long) throttle[1] + 1 : 0;
+    }
+
+    private void throttleSpend(UUID uuid, long bytes) {
+        double[] throttle = throttles.get(uuid);
+        if (throttle != null) throttle[1] -= bytes;
+    }
+
     public boolean isFrozenFor(@NotNull UUID uuid) {
         return frozenViewers.contains(uuid);
     }
@@ -414,6 +442,7 @@ public class SyncGroup {
         animRangePlayers.remove(uuid);
         releaseBatch(uuid);
         frozenViewers.remove(uuid);
+        throttles.remove(uuid);
         viewerSeq.remove(uuid);
         playerViews.remove(uuid);
         initializedMapsPerUser.remove(uuid);
@@ -772,6 +801,7 @@ public class SyncGroup {
         long budget = sink.animationBudget(uuid);
         if (budget <= 0 && sink.animationFullBudget(uuid, !animating) <= 0) return;
 
+        long allowedBytes = throttleAllowed(uuid);
         Set<Integer> sentMaps = sentMapsOf(uuid);
         long spent = 0;
         int packets = 0;
@@ -781,8 +811,8 @@ public class SyncGroup {
             if (batch.isEmpty()) {
                 batches.remove(uuid, batch);
                 batch = null;
-            } else if (budget > 0) {
-                long[] done = drainBatch(uuid, batch, sentMaps, sink, budget);
+            } else if (budget > 0 && allowedBytes > 0) {
+                long[] done = drainBatch(uuid, batch, sentMaps, sink, Math.min(budget, allowedBytes));
                 spent += done[0];
                 packets += (int) done[1];
                 if (batch.isEmpty()) batches.remove(uuid, batch);
@@ -792,7 +822,7 @@ public class SyncGroup {
 
         List<FrameNode> frameNodes = canvasNodes;
         double[] view = playerViews.get(uuid);
-        boolean diffsDue = animating && !batchActive && !frozenViewers.contains(uuid) && budget - spent > 0 && cadenceDue(uuid, view);
+        boolean diffsDue = animating && !batchActive && !frozenViewers.contains(uuid) && budget - spent > 0 && allowedBytes - spent > 0 && cadenceDue(uuid, view);
 
         List<Pending> diffs = null;
         List<Pending> fulls = null;
@@ -806,7 +836,7 @@ public class SyncGroup {
                 if (box != null) {
                     if (diffs == null) diffs = new ArrayList<>();
                     double stale = 1.0 + Math.max(0, latestSeq - seqs[i]);
-                    diffs.add(new Pending(i, box, score(view, frameNodes.get(i)) / stale));
+                    diffs.add(new Pending(i, box, scatterOrder ? scatterKey(view, frameNodes.get(i), i, latestSeq) : score(view, frameNodes.get(i)) / stale));
                 }
             }
         }
@@ -814,6 +844,7 @@ public class SyncGroup {
         if (fulls != null || diffs != null) {
             long fullBudget = fulls != null ? sink.animationFullBudget(uuid, !animating) : 0;
             long allowance = Math.max(budget - spent, fullBudget);
+            if (fulls == null) allowance = Math.min(allowance, allowedBytes - spent);
             if (allowance > 0) {
                 List<Pending> ordered = new ArrayList<>();
                 long total = 0;
@@ -857,8 +888,28 @@ public class SyncGroup {
         if (spent > 0) {
             recordServed(spent);
             recordViewer(uuid, spent, packets);
+            throttleSpend(uuid, spent);
         }
         sink.spendAnimationBudget(uuid, spent);
+    }
+
+    private static double scatterKey(@Nullable double[] view, FrameNode node, int index, int seq) {
+        int cls = 0;
+        if (view != null) {
+            double tx = node.getBlockX() + 0.5 - view[0];
+            double ty = node.getBlockY() + 0.5 - view[1];
+            double tz = node.getBlockZ() + 0.5 - view[2];
+            double distance = Math.sqrt(tx * tx + ty * ty + tz * tz);
+            if (distance > 1.0e-6) {
+                double facing = (tx * view[3] + ty * view[4] + tz * view[5]) / distance;
+                cls = facing > 0.35 ? 0 : (facing > -0.1 ? 1 : 2);
+            }
+        }
+        int h = index * 0x9E3779B1 ^ seq * 0x85EBCA6B;
+        h ^= h >>> 15;
+        h *= 0x2C1B3C6D;
+        h ^= h >>> 12;
+        return cls + ((h & 0x7FFFFFFF) / (double) 0x7FFFFFFF) * 0.99;
     }
 
     private long[] drainBatch(UUID uuid, java.util.concurrent.ConcurrentLinkedDeque<BatchItem> batch, Set<Integer> sentMaps,

@@ -29,6 +29,10 @@ performance:
   # player is looking at and the cheapest ones, and pauses the rest on their current frame, instead of making all of
   # them stutter and raising the ping. Set to false to let every visible GIF compete for the bandwidth.
   limit-animated-gifs: true
+  # A big GIF frame cannot reach the player instantly, so its maps change one after another. With true (default) they
+  # change in a scattered order across the whole picture, which looks like a soft fade; with false they change from the
+  # point the player looks at outwards, which looks like a moving wave.
+  scatter-map-updates: true
   # Set to false to rely only on the network buffer fill level (for clients/proxies that mishandle ping packets).
   latency-probe: true
 

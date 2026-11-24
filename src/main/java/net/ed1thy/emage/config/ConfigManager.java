@@ -19,6 +19,7 @@ public class ConfigManager {
     public int targetQueueDelayMs;
     public boolean latencyProbe;
     public boolean limitAnimatedGifs;
+    public boolean scatterMapUpdates;
 
     public String dbFileName;
     public int dbPoolSize;
@@ -92,6 +93,7 @@ public class ConfigManager {
         this.targetQueueDelayMs = Math.max(20, config.getInt("performance.target-queue-delay-ms", 20));
         this.latencyProbe = config.getBoolean("performance.latency-probe", true);
         this.limitAnimatedGifs = config.getBoolean("performance.limit-animated-gifs", true);
+        this.scatterMapUpdates = config.getBoolean("performance.scatter-map-updates", true);
 
         this.dbFileName = config.getString("storage.database.file-name", "emage_meta.db");
         this.dbPoolSize = config.getInt("storage.database.pool-size", 2);

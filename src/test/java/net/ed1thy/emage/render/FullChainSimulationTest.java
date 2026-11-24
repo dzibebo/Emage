@@ -767,12 +767,13 @@ class FullChainSimulationTest {
                 for (SyncGroup group : all) {
                     candidates.add(new AdmissionControl.Candidate(group.groupId(), group.priorityFor(viewer), group.demandBytesPerSecond(), !group.isFrozenFor(viewer)));
                 }
-                Set<Integer> admitted = AdmissionControl.select(candidates, Math.min(queue.capacityEstimate(), testMaxRate));
+                Map<Integer, Double> admitted = AdmissionControl.select(candidates, Math.min(queue.capacityEstimate(), testMaxRate));
                 lastFrozenAtEnd = 0;
                 for (SyncGroup group : all) {
-                    boolean frozen = !admitted.contains(group.groupId());
-                    group.setFrozenFor(viewer, frozen);
-                    if (frozen) lastFrozenAtEnd++;
+                    Double allowance = admitted.get(group.groupId());
+                    group.setFrozenFor(viewer, allowance == null);
+                    group.setAllowanceFor(viewer, allowance == null ? 0.0 : allowance);
+                    if (allowance == null) lastFrozenAtEnd++;
                 }
             }
             all.sort(Comparator.comparingDouble(g -> g.servedScore(millis)));

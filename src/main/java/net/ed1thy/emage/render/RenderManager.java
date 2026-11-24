@@ -74,6 +74,7 @@ public class RenderManager implements FrameSink {
         this.packetSender = packetSender;
         this.maxPacketsPerTick = configManager.maxPacketsPerTick;
         this.admissionEnabled = configManager.limitAnimatedGifs;
+        SyncGroup.scatterOrder = configManager.scatterMapUpdates;
         this.viewDistance = configManager.viewDistanceBlocks > 0 ? (double) configManager.viewDistanceBlocks : 96.0;
         this.animatedViewDistance = configManager.animatedViewDistanceBlocks;
         this.tuning = new PlayerSendQueue.Tuning(
@@ -149,13 +150,15 @@ public class RenderManager implements FrameSink {
                 continue;
             }
             double budget = Math.min(queue.capacityEstimate(), tuning.maxBytesPerSecond());
-            Set<Integer> admitted = AdmissionControl.select(candidates, budget);
+            Map<Integer, Double> admitted = AdmissionControl.select(candidates, budget);
             double demand = 0;
             for (AdmissionControl.Candidate candidate : candidates) {
-                if (admitted.contains(candidate.id())) demand += candidate.demand();
+                if (admitted.containsKey(candidate.id())) demand += candidate.demand();
             }
             for (Map.Entry<Integer, SyncGroup> group : byId.entrySet()) {
-                group.getValue().setFrozenFor(uuid, !admitted.contains(group.getKey()));
+                Double allowance = admitted.get(group.getKey());
+                group.getValue().setFrozenFor(uuid, allowance == null);
+                group.getValue().setAllowanceFor(uuid, allowance == null ? 0.0 : allowance);
             }
             admissionSummary.put(uuid, String.format("%d of %d visible GIFs animate (they need about %.1f MB/s at original speed, the budget is %.1f MB/s)",
                     admitted.size(), candidates.size(), demand / 1048576.0, budget / 1048576.0));

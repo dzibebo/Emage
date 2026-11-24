@@ -439,4 +439,24 @@ class AnimationDistributionTest {
         run(sink, 60);
         assertTrue(sink.updates > paused, "the gif must start playing again");
     }
+
+    @Test
+    void aGifThatWasPausedForALongTimeShowsExactlyTheServerPictureAfterResuming() throws Exception {
+        ClientSink sink = new ClientSink();
+        group.setViewerStateForTesting(viewer, true, true);
+        run(sink, 40);
+
+        for (int round = 0; round < 6; round++) {
+            group.setFrozenFor(viewer, true);
+            run(sink, 25 + round * 13);
+            group.setFrozenFor(viewer, false);
+            run(sink, 12 + round * 7);
+        }
+        group.setFrozenFor(viewer, false);
+        run(sink, 60);
+        group.freezeClockForTesting();
+        run(sink, 40);
+
+        assertClientEqualsServer(sink, 2);
+    }
 }
