@@ -421,4 +421,22 @@ class AnimationDistributionTest {
         assertEquals(0, group.loadedWindowFramesForTesting(), "a removed gif must not keep frames in memory");
         assertTrue(!group.baseLoadedForTesting(), "a removed gif must not keep its base pictures in memory");
     }
+
+    @Test
+    void aPausedViewerSendsNothingAndResumesWhenTheGifIsAdmittedAgain() throws Exception {
+        ClientSink sink = new ClientSink();
+        group.setViewerStateForTesting(viewer, true, true);
+        run(sink, 60);
+        assertTrue(sink.updates > 0);
+
+        group.setFrozenFor(viewer, true);
+        run(sink, 15);
+        int paused = sink.updates;
+        run(sink, 60);
+        assertEquals(paused, sink.updates, "a paused gif must not send anything");
+
+        group.setFrozenFor(viewer, false);
+        run(sink, 60);
+        assertTrue(sink.updates > paused, "the gif must start playing again");
+    }
 }

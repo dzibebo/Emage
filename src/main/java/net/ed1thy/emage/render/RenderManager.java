@@ -59,6 +59,8 @@ public class RenderManager implements FrameSink {
     private final ScheduledExecutorService executorService;
     private ScheduledFuture<?> tickTask;
     private volatile double tickAvgNanos;
+    private final Map<UUID, String> admissionSummary = new java.util.concurrent.ConcurrentHashMap<>();
+    private final boolean admissionEnabled;
     private volatile double tickMaxNanos;
     private BukkitTask visibilityTask;
 
@@ -71,6 +73,7 @@ public class RenderManager implements FrameSink {
         this.chunkViewerTracker = chunkViewerTracker;
         this.packetSender = packetSender;
         this.maxPacketsPerTick = configManager.maxPacketsPerTick;
+        this.admissionEnabled = configManager.limitAnimatedGifs;
         this.viewDistance = configManager.viewDistanceBlocks > 0 ? (double) configManager.viewDistanceBlocks : 96.0;
         this.animatedViewDistance = configManager.animatedViewDistanceBlocks;
         this.tuning = new PlayerSendQueue.Tuning(
@@ -121,7 +124,42 @@ public class RenderManager implements FrameSink {
             for (SyncGroup group : activeGroups.values()) {
                 group.updateVisibility();
             }
+            if (admissionEnabled) {
+                runAdmission();
+            }
         }, 5L, 5L);
+    }
+
+    private void runAdmission() {
+        for (Map.Entry<User, PlayerSendQueue> entry : userPacketQueues.entrySet()) {
+            UUID uuid = entry.getKey().getUUID();
+            PlayerSendQueue queue = entry.getValue();
+            List<AdmissionControl.Candidate> candidates = new ArrayList<>();
+            Map<Integer, SyncGroup> byId = new java.util.HashMap<>();
+            for (SyncGroup group : activeGroups.values()) {
+                if (!group.isAnimatedPicture() || !group.isPlayingFor(uuid)) {
+                    group.setFrozenFor(uuid, false);
+                    continue;
+                }
+                byId.put(group.groupId(), group);
+                candidates.add(new AdmissionControl.Candidate(group.groupId(), group.priorityFor(uuid), group.demandBytesPerSecond(), !group.isFrozenFor(uuid)));
+            }
+            if (candidates.isEmpty()) {
+                admissionSummary.remove(uuid);
+                continue;
+            }
+            double budget = Math.min(queue.capacityEstimate(), tuning.maxBytesPerSecond());
+            Set<Integer> admitted = AdmissionControl.select(candidates, budget);
+            double demand = 0;
+            for (AdmissionControl.Candidate candidate : candidates) {
+                if (admitted.contains(candidate.id())) demand += candidate.demand();
+            }
+            for (Map.Entry<Integer, SyncGroup> group : byId.entrySet()) {
+                group.getValue().setFrozenFor(uuid, !admitted.contains(group.getKey()));
+            }
+            admissionSummary.put(uuid, String.format("%d of %d visible GIFs animate (they need about %.1f MB/s at original speed, the budget is %.1f MB/s)",
+                    admitted.size(), candidates.size(), demand / 1048576.0, budget / 1048576.0));
+        }
     }
 
     private void tickAll() {
@@ -319,6 +357,8 @@ public class RenderManager implements FrameSink {
             User user = entry.getKey();
             String name = user.getProfile() != null ? user.getProfile().getName() : String.valueOf(user.getUUID());
             lines.add("Player " + name + ": " + entry.getValue().describe());
+            String admission = admissionSummary.get(user.getUUID());
+            if (admission != null) lines.add("    animation: " + admission);
             if (full) {
                 int inRange = 0;
                 int delivered = 0;

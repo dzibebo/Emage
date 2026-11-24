@@ -1,4 +1,4 @@
-config-version: 4
+config-version: 5
 
 performance:
   max-packets-per-tick: 64
@@ -11,7 +11,7 @@ performance:
   # The speed starts low, grows quickly and then follows each player's real connection: it backs off by itself as soon
   # as the player's ping starts to rise. These are only the outer bounds (bytes per second), so the maximum can be
   # generous: a player on a fast connection gets big gifs at full speed, a player on a weak one gets what fits.
-  max-bytes-per-second-per-player: 33554432
+  max-bytes-per-second-per-player: 8388608
   # Hard cap for all players together (bytes per second). Encoding and compressing map packets costs CPU on the
   # network threads, so even many players joining at once cannot starve everyone else's connection.
   max-total-bytes-per-second: 67108864
@@ -23,7 +23,12 @@ performance:
   # extra ping caused by pictures stays around this value. Short random spikes (VPN, far-away players) are filtered out.
   # Lower = ping stays closer to the real one but GIFs get less speed; higher = faster GIFs and more extra ping.
   # Typical choices: 20 (lowest allowed), 30 (default), 60, 100. /emage debug shows the measured values for every player.
-  target-queue-delay-ms: 30
+  target-queue-delay-ms: 20
+  # A player's game can only process a limited number of map updates per second (every map update makes it rebuild the
+  # whole map texture). When the visible GIFs together need more than the player's budget, Emage animates the ones the
+  # player is looking at and the cheapest ones, and pauses the rest on their current frame, instead of making all of
+  # them stutter and raising the ping. Set to false to let every visible GIF compete for the bandwidth.
+  limit-animated-gifs: true
   # Set to false to rely only on the network buffer fill level (for clients/proxies that mishandle ping packets).
   latency-probe: true
 
@@ -34,7 +39,7 @@ storage:
 
 quality:
   max-gif-frames: 240
-  max-gif-grid-size: 16
+  max-gif-grid-size: 10
   max-image-grid-size: 16
 
 downloads:

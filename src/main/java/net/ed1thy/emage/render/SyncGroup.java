@@ -46,6 +46,7 @@ public class SyncGroup {
     private long lastTickTime = 0;
     private double servedBytes;
     private volatile double focusWeight = 1.0;
+    private final Set<UUID> frozenViewers = ConcurrentHashMap.newKeySet();
     private long servedStamp;
     private long tickNowMillis;
 
@@ -224,7 +225,7 @@ public class SyncGroup {
 
     private boolean anyAnimationViewer() {
         for (UUID uuid : visiblePlayers) {
-            if (animRangePlayers.contains(uuid)) return true;
+            if (animRangePlayers.contains(uuid) && !frozenViewers.contains(uuid)) return true;
         }
         return false;
     }
@@ -281,31 +282,52 @@ public class SyncGroup {
 
     private void updateFocus() {
         double best = 0.1;
+        for (UUID uuid : inRangePlayers) {
+            best = Math.max(best, priorityFor(uuid));
+        }
+        focusWeight = best;
+    }
+
+    public double priorityFor(@NotNull UUID uuid) {
+        double[] view = playerViews.get(uuid);
+        if (view == null) return 0.1;
+        if (distanceToBoundsSquared(view[0], view[1], view[2]) < 16.0) return 1.0;
         double cx = (minX + maxX) / 2.0;
         double cy = (minY + maxY) / 2.0;
         double cz = (minZ + maxZ) / 2.0;
-        for (UUID uuid : inRangePlayers) {
-            double[] view = playerViews.get(uuid);
-            if (view == null) continue;
-            if (distanceToBoundsSquared(view[0], view[1], view[2]) < 16.0) {
-                best = 1.0;
-                break;
-            }
-            double tx = cx - view[0];
-            double ty = cy - view[1];
-            double tz = cz - view[2];
-            double distance = Math.sqrt(tx * tx + ty * ty + tz * tz);
-            if (distance < 1.0e-6) {
-                best = 1.0;
-                break;
-            }
-            double facing = (tx * view[3] + ty * view[4] + tz * view[5]) / distance;
-            double weight = facing >= 0.9 ? 1.0 : (facing >= 0.5 ? 0.4 + 0.6 * (facing - 0.5) / 0.4 : 0.25);
-            double nearest = Math.sqrt(distanceToBoundsSquared(view[0], view[1], view[2]));
-            double distanceFactor = nearest <= 16.0 ? 1.0 : Math.max(0.35, 16.0 / nearest);
-            best = Math.max(best, weight * distanceFactor);
-        }
-        focusWeight = best;
+        double tx = cx - view[0];
+        double ty = cy - view[1];
+        double tz = cz - view[2];
+        double distance = Math.sqrt(tx * tx + ty * ty + tz * tz);
+        if (distance < 1.0e-6) return 1.0;
+        double facing = (tx * view[3] + ty * view[4] + tz * view[5]) / distance;
+        double weight = facing >= 0.9 ? 1.0 : (facing >= 0.5 ? 0.4 + 0.6 * (facing - 0.5) / 0.4 : 0.25);
+        double nearest = Math.sqrt(distanceToBoundsSquared(view[0], view[1], view[2]));
+        double distanceFactor = nearest <= 16.0 ? 1.0 : Math.max(0.35, 16.0 / nearest);
+        return Math.max(0.1, weight * distanceFactor);
+    }
+
+    public double demandBytesPerSecond() {
+        double perFrame = frameBytesEwma;
+        if (perFrame <= 0) perFrame = nodes.size() * (double) AnimationCanvas.MAP_BYTES * 0.5;
+        return perFrame * 1000.0 / Math.max(20, metadata.delayMs());
+    }
+
+    public int groupId() {
+        return metadata.syncGroupID();
+    }
+
+    public boolean isPlayingFor(@NotNull UUID uuid) {
+        return isAnimating(uuid);
+    }
+
+    public boolean isFrozenFor(@NotNull UUID uuid) {
+        return frozenViewers.contains(uuid);
+    }
+
+    public void setFrozenFor(@NotNull UUID uuid, boolean frozen) {
+        if (frozen) frozenViewers.add(uuid);
+        else frozenViewers.remove(uuid);
     }
 
     private void markNotVisible(@NotNull UUID uuid) {
@@ -391,6 +413,7 @@ public class SyncGroup {
         visiblePlayers.remove(uuid);
         animRangePlayers.remove(uuid);
         releaseBatch(uuid);
+        frozenViewers.remove(uuid);
         viewerSeq.remove(uuid);
         playerViews.remove(uuid);
         initializedMapsPerUser.remove(uuid);
@@ -769,7 +792,7 @@ public class SyncGroup {
 
         List<FrameNode> frameNodes = canvasNodes;
         double[] view = playerViews.get(uuid);
-        boolean diffsDue = animating && !batchActive && budget - spent > 0 && cadenceDue(uuid, view);
+        boolean diffsDue = animating && !batchActive && !frozenViewers.contains(uuid) && budget - spent > 0 && cadenceDue(uuid, view);
 
         List<Pending> diffs = null;
         List<Pending> fulls = null;
@@ -1116,6 +1139,8 @@ public class SyncGroup {
             StringBuilder v = new StringBuilder("    viewer ").append(name).append(": ")
                     .append(animRangePlayers.contains(uuid) ? "close enough" : "too far to animate")
                     .append(", ").append(visiblePlayers.contains(uuid) ? "in view" : "out of view");
+            if (frozenViewers.contains(uuid)) v.append(", PAUSED (does not fit this player's budget)");
+            v.append(String.format(", priority %.2f", priorityFor(uuid)));
             if (animated && current != null) {
                 int[] seqs = viewerSeq.get(uuid);
                 if (seqs == null) {

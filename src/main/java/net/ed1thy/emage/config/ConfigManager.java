@@ -18,6 +18,7 @@ public class ConfigManager {
     public int maxTotalBytesPerSecond;
     public int targetQueueDelayMs;
     public boolean latencyProbe;
+    public boolean limitAnimatedGifs;
 
     public String dbFileName;
     public int dbPoolSize;
@@ -49,16 +50,18 @@ public class ConfigManager {
         this.plugin = plugin;
     }
 
-    public static final int CONFIG_VERSION = 4;
+    public static final int CONFIG_VERSION = 5;
 
     public static boolean migrate(@NotNull FileConfiguration config) {
         if (config.getInt("config-version", 1) >= CONFIG_VERSION) return false;
         upgradeDefault(config, "performance.max-bytes-per-second-per-player", 2097152, 33554432);
         upgradeDefault(config, "performance.max-total-bytes-per-second", 16777216, 67108864);
-        upgradeDefault(config, "performance.target-queue-delay-ms", 80, 30);
-        upgradeDefault(config, "performance.target-queue-delay-ms", 20, 30);
+        upgradeDefault(config, "performance.target-queue-delay-ms", 80, 20);
+        upgradeDefault(config, "performance.target-queue-delay-ms", 30, 20);
+        upgradeDefault(config, "performance.max-bytes-per-second-per-player", 33554432, 8388608);
         upgradeDefault(config, "performance.animated-view-distance-blocks", 32, 48);
-        upgradeDefault(config, "quality.max-gif-grid-size", 5, 16);
+        upgradeDefault(config, "quality.max-gif-grid-size", 5, 10);
+        upgradeDefault(config, "quality.max-gif-grid-size", 16, 10);
         config.set("config-version", CONFIG_VERSION);
         return true;
     }
@@ -81,18 +84,19 @@ public class ConfigManager {
         this.maxPacketsPerTick = config.getInt("performance.max-packets-per-tick", 64);
         this.viewDistanceBlocks = config.getInt("performance.view-distance-blocks", 96);
         this.animatedViewDistanceBlocks = config.getInt("performance.animated-view-distance-blocks", 48);
-        this.maxBytesPerSecondPerPlayer = Math.max(16384, config.getInt("performance.max-bytes-per-second-per-player", 33554432));
+        this.maxBytesPerSecondPerPlayer = Math.max(16384, config.getInt("performance.max-bytes-per-second-per-player", 8388608));
         this.maxTotalBytesPerSecond = Math.max(1048576, config.getInt("performance.max-total-bytes-per-second", 67108864));
         this.minBytesPerSecondPerPlayer = Math.max(4096, config.getInt("performance.min-bytes-per-second-per-player", 262144));
         this.maxPendingBytesPerPlayer = Math.max(33000, config.getInt("performance.max-pending-bytes-per-player", 98304));
-        this.targetQueueDelayMs = Math.max(20, config.getInt("performance.target-queue-delay-ms", 30));
+        this.targetQueueDelayMs = Math.max(20, config.getInt("performance.target-queue-delay-ms", 20));
         this.latencyProbe = config.getBoolean("performance.latency-probe", true);
+        this.limitAnimatedGifs = config.getBoolean("performance.limit-animated-gifs", true);
 
         this.dbFileName = config.getString("storage.database.file-name", "emage_meta.db");
         this.dbPoolSize = config.getInt("storage.database.pool-size", 2);
 
         this.maxGifFrames = config.getInt("quality.max-gif-frames", 240);
-        this.maxGifGridSize = config.getInt("quality.max-gif-grid-size", 16);
+        this.maxGifGridSize = config.getInt("quality.max-gif-grid-size", 10);
         this.maxImageGridSize = config.getInt("quality.max-image-grid-size", 16);
 
         this.maxFileSizeMb = config.getInt("downloads.max-file-size-mb", 50);

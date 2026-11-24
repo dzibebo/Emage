@@ -603,6 +603,9 @@ class FullChainSimulationTest {
     }
 
     private int lastMaxDistinct;
+    private boolean testAdmission;
+    private int testMaxRate = MAX_RATE;
+    private int lastFrozenAtEnd;
     private double testHiccupEvery;
     private double testHiccupLen;
     private double lastLateP95;
@@ -747,9 +750,9 @@ class FullChainSimulationTest {
             }
             classMaps.add(firsts);
         }
-        PlayerSendQueue queue = new PlayerSendQueue(new PlayerSendQueue.Tuning(MIN_RATE, MAX_RATE, 98_304, TARGET_DELAY_MS, true));
+        PlayerSendQueue queue = new PlayerSendQueue(new PlayerSendQueue.Tuning(MIN_RATE, testMaxRate, 98_304, TARGET_DELAY_MS, true));
         QueueSink sink = new QueueSink(queue);
-        SendBudget budget = new SendBudget(Math.max(16_777_216, MAX_RATE * 2));
+        SendBudget budget = new SendBudget(Math.max(16_777_216, testMaxRate * 2));
         SimulatedLink link = new SimulatedLink(bandwidth, rtt, 2_000_000, true);
         List<Double> late = new ArrayList<>();
         double dt = 0.02;
@@ -759,6 +762,19 @@ class FullChainSimulationTest {
             long millis = 1_000_000L + (long) (t * 1000);
             budget.refill(nanos);
             link.deliverPongs(queue);
+            if (testAdmission && ((int) Math.round(t / dt)) % 12 == 0) {
+                List<AdmissionControl.Candidate> candidates = new ArrayList<>();
+                for (SyncGroup group : all) {
+                    candidates.add(new AdmissionControl.Candidate(group.groupId(), group.priorityFor(viewer), group.demandBytesPerSecond(), !group.isFrozenFor(viewer)));
+                }
+                Set<Integer> admitted = AdmissionControl.select(candidates, Math.min(queue.capacityEstimate(), testMaxRate));
+                lastFrozenAtEnd = 0;
+                for (SyncGroup group : all) {
+                    boolean frozen = !admitted.contains(group.groupId());
+                    group.setFrozenFor(viewer, frozen);
+                    if (frozen) lastFrozenAtEnd++;
+                }
+            }
             all.sort(Comparator.comparingDouble(g -> g.servedScore(millis)));
             for (SyncGroup group : all) {
                 if (group.shouldTick(millis)) group.tick(millis, sink);
@@ -897,6 +913,24 @@ class FullChainSimulationTest {
         } finally {
             testHiccupEvery = 0;
             testHiccupLen = 0;
+        }
+    }
+
+    @Test
+    void limitingTheAnimatedGifsKeepsTheCheapOnesSmoothAndThePingLow() throws Exception {
+        int[][] specs = {{4, 256, 128, 8}, {3, 60, 128, 12}, {3, 4, 100, 20}};
+        testAdmission = true;
+        testMaxRate = 8_388_608;
+        try {
+            double[] r = runMixed(specs, 20_000_000, 0.10, 24, 1400);
+            System.out.printf("ADMISSION link 20 MB/s, limit 8 MB/s: 4 huge gifs %.1f/s, 3 big gifs %.1f/s, 3 small gifs %.1f/s; added ping p95 %.0f ms; paused gifs: %d of 10; no gif shows more than %d frames at once%n",
+                    r[0], r[1], r[2], r[3] * 1000, lastFrozenAtEnd, lastMaxDistinct);
+            assertTrue(r[2] >= 17, "the cheap gifs must run at nearly full speed: " + r[2]);
+            assertTrue(r[3] < 0.04, "added ping with the limit: " + r[3]);
+            assertTrue(lastFrozenAtEnd >= 4, "gifs that do not fit the budget must be paused: " + lastFrozenAtEnd);
+        } finally {
+            testAdmission = false;
+            testMaxRate = MAX_RATE;
         }
     }
 
