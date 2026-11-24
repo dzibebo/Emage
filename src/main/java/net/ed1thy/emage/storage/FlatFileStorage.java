@@ -27,6 +27,14 @@ public class FlatFileStorage {
         this.ioExecutor = ioExecutor;
     }
 
+    public FlatFileStorage(@NotNull File dataFolder, @NotNull ExecutorService ioExecutor) {
+        this.dataFolder = dataFolder;
+        if (!this.dataFolder.exists()) {
+            this.dataFolder.mkdirs();
+        }
+        this.ioExecutor = ioExecutor;
+    }
+
     public CompletableFuture<Void> saveBundledFrameAsync(int syncGroupId, int frameIndex, Map<Integer, MapFrameUpdate> updates) {
         return CompletableFuture.runAsync(() -> {
             try {
@@ -37,38 +45,53 @@ public class FlatFileStorage {
         }, ioExecutor);
     }
 
-    private void saveBundledFrame(int syncGroupId, int frameIndex, Map<Integer, MapFrameUpdate> updates) throws IOException {
+    public void saveBundledFrame(int syncGroupId, int frameIndex, Map<Integer, MapFrameUpdate> updates) throws IOException {
         if (updates.isEmpty()) return;
 
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        try (DataOutputStream dos = new DataOutputStream(baos)) {
-            dos.writeInt(updates.size());
-            for (Map.Entry<Integer, MapFrameUpdate> entry : updates.entrySet()) {
-                dos.writeInt(entry.getKey());
-                MapFrameUpdate update = entry.getValue();
-                dos.writeInt(update.parts().length);
-                for (DeltaFrame df : update.parts()) {
-                    ByteBuf buf = df.packetBuf();
-                    int len = buf.readableBytes();
-                    dos.writeInt(len);
-                    byte[] bytes = new byte[len];
-                    buf.getBytes(buf.readerIndex(), bytes);
-                    dos.write(bytes);
-                }
+        int total = 4;
+        for (MapFrameUpdate update : updates.values()) {
+            total += 8;
+            for (DeltaFrame df : update.parts()) {
+                total += 4 + df.packetBuf().readableBytes();
             }
         }
 
-        byte[] uncompressed = baos.toByteArray();
+        byte[] uncompressed = new byte[total];
+        java.nio.ByteBuffer out = java.nio.ByteBuffer.wrap(uncompressed);
+        out.putInt(updates.size());
+        for (Map.Entry<Integer, MapFrameUpdate> entry : updates.entrySet()) {
+            out.putInt(entry.getKey());
+            MapFrameUpdate update = entry.getValue();
+            out.putInt(update.parts().length);
+            for (DeltaFrame df : update.parts()) {
+                ByteBuf buf = df.packetBuf();
+                int len = buf.readableBytes();
+                out.putInt(len);
+                buf.getBytes(buf.readerIndex(), uncompressed, out.position(), len);
+                out.position(out.position() + len);
+            }
+        }
+
         byte[] compressed = new byte[(int) com.github.luben.zstd.Zstd.compressBound(uncompressed.length)];
         long compressedSize = com.github.luben.zstd.Zstd.compress(compressed, uncompressed, 3);
-        byte[] finalCompressed = java.util.Arrays.copyOf(compressed, (int) compressedSize);
+        if (com.github.luben.zstd.Zstd.isError(compressedSize)) {
+            throw new IOException("Compression failed: " + com.github.luben.zstd.Zstd.getErrorName(compressedSize));
+        }
+        uncompressed = null;
 
         File groupDir = new File(dataFolder, String.valueOf(syncGroupId));
         if (!groupDir.exists()) groupDir.mkdirs();
 
         File frameFile = new File(groupDir, "frame_" + frameIndex + ".zst");
-        try (FileOutputStream fos = new FileOutputStream(frameFile)) {
-            fos.write(finalCompressed);
+        File tempFile = new File(groupDir, "frame_" + frameIndex + ".zst.tmp");
+        try (FileOutputStream fos = new FileOutputStream(tempFile)) {
+            fos.write(compressed, 0, (int) compressedSize);
+        }
+        try {
+            Files.move(tempFile.toPath(), frameFile.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Files.move(tempFile.toPath(), frameFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -138,6 +161,10 @@ public class FlatFileStorage {
         } catch (IOException e) {
             return null;
         }
+    }
+
+    public long frameDataLength(int syncGroupId, int frameIndex) {
+        return new File(dataFolder, syncGroupId + File.separator + "frame_" + frameIndex + ".zst").length();
     }
 
     public boolean hasFrameData(int syncGroupId, int frameIndex) {

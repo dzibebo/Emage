@@ -12,10 +12,14 @@ import org.jetbrains.annotations.Nullable;
 import java.awt.AlphaComposite;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
+import java.awt.image.ColorModel;
 import java.awt.image.DataBufferInt;
+import java.awt.image.Raster;
+import java.awt.image.WritableRaster;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -23,8 +27,12 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ForkJoinPool;
 import java.util.function.Consumer;
+import java.util.stream.IntStream;
 
 public class ImagePipeline {
+
+    private static final int MAP_SIZE = 128;
+    private static final int MAX_FRAMES_BEING_SAVED = 4;
 
     private final ColorPalette lut;
     private final FlatFileStorage storage;
@@ -48,33 +56,47 @@ public class ImagePipeline {
         buf.writeByte(value);
     }
 
+    static BufferedImage wrapPixels(int[] pixels, int width, int height) {
+        DataBufferInt buffer = new DataBufferInt(pixels, width * height);
+        WritableRaster raster = Raster.createPackedRaster(buffer, width, height, width,
+                new int[]{0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000}, null);
+        BufferedImage image = new BufferedImage(ColorModel.getRGBdefault(), raster, false, null);
+        buffer.getData();
+        return image;
+    }
+
+    private static Graphics2D createBandGraphics(BufferedImage band) {
+        Graphics2D g = band.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        g.setRenderingHint(RenderingHints.KEY_COLOR_RENDERING, RenderingHints.VALUE_COLOR_RENDER_QUALITY);
+        g.setComposite(AlphaComposite.Src);
+        return g;
+    }
+
     public CompletableFuture<Map<Integer, MapFrameUpdate>> processStreamAsync(
             @NotNull ImageFrameProvider decoder, int syncGroupId, @NotNull List<Integer> virtualMapIds, int columns, int rows,
             @Nullable Consumer<Double> progressCallback) {
 
         return CompletableFuture.supplyAsync(() -> {
-            Map<Integer, MapFrameUpdate> firstFrameMap = new HashMap<>();
+            Map<Integer, MapFrameUpdate> firstFrameMap = new ConcurrentHashMap<>();
             List<CompletableFuture<Void>> ioTasks = new ArrayList<>();
+            ArrayDeque<CompletableFuture<Void>> framesBeingSaved = new ArrayDeque<>();
+            Graphics2D bandGraphics = null;
 
             try (decoder) {
                 while (!lut.isReady()) {
                     Thread.sleep(50);
                 }
 
-                int totalWidth = columns * 128;
-                int totalHeight = rows * 128;
+                int totalWidth = columns * MAP_SIZE;
+                int totalHeight = rows * MAP_SIZE;
 
-                BufferedImage scaledImage = new BufferedImage(totalWidth, totalHeight, BufferedImage.TYPE_INT_ARGB);
-                Graphics2D gFinal = scaledImage.createGraphics();
-                gFinal.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                gFinal.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-                gFinal.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-                gFinal.setRenderingHint(RenderingHints.KEY_COLOR_RENDERING, RenderingHints.VALUE_COLOR_RENDER_QUALITY);
-                gFinal.setComposite(AlphaComposite.Src);
-
-                int[] argbPixels = ((DataBufferInt) scaledImage.getRaster().getDataBuffer()).getData();
-                byte[] ditheredColors = new byte[totalWidth * totalHeight];
-                BufferedImage rawImage = null;
+                BufferedImage band = new BufferedImage(totalWidth, MAP_SIZE, BufferedImage.TYPE_INT_ARGB);
+                bandGraphics = createBandGraphics(band);
+                int[] bandPixels = ((DataBufferInt) band.getRaster().getDataBuffer()).getData();
+                byte[] bandColors = new byte[totalWidth * MAP_SIZE];
 
                 byte[][] prevMapFrames = new byte[virtualMapIds.size()][];
                 byte[][] currMapFrames = new byte[virtualMapIds.size()][];
@@ -94,66 +116,60 @@ public class ImagePipeline {
                 for (int frameIndex = 0; frameIndex < totalFramesCount; frameIndex++) {
                     BufferedImage source = decoder.getFrameImage(frameIndex);
                     if (source == null) {
-                        int rawWidth = decoder.getFrameWidth(frameIndex);
-                        int rawHeight = decoder.getFrameHeight(frameIndex);
-                        int[] rawPixels = decoder.getFramePixels(frameIndex);
-
-                        if (rawImage == null || rawImage.getWidth() != rawWidth || rawImage.getHeight() != rawHeight) {
-                            rawImage = new BufferedImage(rawWidth, rawHeight, BufferedImage.TYPE_INT_ARGB);
-                        }
-                        rawImage.setRGB(0, 0, rawWidth, rawHeight, rawPixels, 0, rawWidth);
-                        source = rawImage;
+                        source = wrapPixels(decoder.getFramePixels(frameIndex), decoder.getFrameWidth(frameIndex), decoder.getFrameHeight(frameIndex));
                     }
-
-                    gFinal.drawImage(source, 0, 0, totalWidth, totalHeight, null);
-                    dither.applyDither(argbPixels, totalWidth, totalHeight, lut, ditheredColors);
 
                     final boolean firstFrame = (frameIndex == 0);
                     final int fIndex = frameIndex;
-
                     Map<Integer, MapFrameUpdate> frameUpdates = new ConcurrentHashMap<>();
 
                     try {
-                        java.util.stream.IntStream.range(0, rows * columns).parallel().forEach(mapIndex -> {
-                            int row = mapIndex / columns;
-                            int col = mapIndex % columns;
-                            int mapId = virtualMapIds.get(mapIndex);
+                        for (int row = 0; row < rows; row++) {
+                            bandGraphics.setTransform(AffineTransform.getTranslateInstance(0, -(double) row * MAP_SIZE));
+                            bandGraphics.drawImage(source, 0, 0, totalWidth, totalHeight, null);
+                            dither.applyDither(bandPixels, totalWidth, MAP_SIZE, lut, bandColors);
 
-                            byte[] prevMap = prevMapFrames[mapIndex];
-                            byte[] currMap = currMapFrames[mapIndex];
+                            final int bandRow = row;
+                            IntStream.range(0, columns).parallel().forEach(col -> {
+                                int mapIndex = bandRow * columns + col;
+                                int mapId = virtualMapIds.get(mapIndex);
 
-                            if (firstFrame) {
-                                extractMapArray(ditheredColors, totalWidth, col * 128, row * 128, currMap);
-                                ByteBuf packetBuf = PooledByteBufAllocator.DEFAULT.directBuffer(16384 + 16);
-                                writeVarInt(packetBuf, mapId);
-                                packetBuf.writeByte(0);
-                                packetBuf.writeBoolean(true);
-                                packetBuf.writeBoolean(false);
-                                packetBuf.writeByte(128);
-                                packetBuf.writeByte(128);
-                                packetBuf.writeByte(0);
-                                packetBuf.writeByte(0);
-                                writeVarInt(packetBuf, 16384);
-                                packetBuf.writeBytes(currMap);
+                                byte[] prevMap = prevMapFrames[mapIndex];
+                                byte[] currMap = currMapFrames[mapIndex];
 
-                                DeltaFrame fullPart = new DeltaFrame(fIndex, mapId, packetBuf);
-                                MapFrameUpdate update = new MapFrameUpdate(new DeltaFrame[]{fullPart});
+                                if (firstFrame) {
+                                    extractMapArray(bandColors, totalWidth, col * MAP_SIZE, 0, currMap);
+                                    ByteBuf packetBuf = PooledByteBufAllocator.DEFAULT.directBuffer(16384 + 16);
+                                    writeVarInt(packetBuf, mapId);
+                                    packetBuf.writeByte(0);
+                                    packetBuf.writeBoolean(true);
+                                    packetBuf.writeBoolean(false);
+                                    packetBuf.writeByte(128);
+                                    packetBuf.writeByte(128);
+                                    packetBuf.writeByte(0);
+                                    packetBuf.writeByte(0);
+                                    writeVarInt(packetBuf, 16384);
+                                    packetBuf.writeBytes(currMap);
 
-                                frameUpdates.put(mapId, update);
-                                firstFrameMap.put(mapId, update);
+                                    DeltaFrame fullPart = new DeltaFrame(fIndex, mapId, packetBuf);
+                                    MapFrameUpdate update = new MapFrameUpdate(new DeltaFrame[]{fullPart});
 
-                                currMapFrames[mapIndex] = prevMap;
-                                prevMapFrames[mapIndex] = currMap;
-                            } else {
-                                MapTileData tileData = extractMapArrayWithBounds(ditheredColors, totalWidth, col * 128, row * 128, prevMap, currMap);
-                                if (tileData.maxX != -1) {
-                                    MapFrameUpdate update = calculateDelta(fIndex, mapId, tileData.mapTile, tileData.minX, tileData.minY, tileData.maxX, tileData.maxY);
                                     frameUpdates.put(mapId, update);
+                                    firstFrameMap.put(mapId, update);
+
+                                    currMapFrames[mapIndex] = prevMap;
+                                    prevMapFrames[mapIndex] = currMap;
+                                } else {
+                                    MapTileData tileData = extractMapArrayWithBounds(bandColors, totalWidth, col * MAP_SIZE, 0, prevMap, currMap);
+                                    if (tileData.maxX != -1) {
+                                        MapFrameUpdate update = calculateDelta(fIndex, mapId, tileData.mapTile, tileData.minX, tileData.minY, tileData.maxX, tileData.maxY);
+                                        frameUpdates.put(mapId, update);
+                                    }
+                                    currMapFrames[mapIndex] = prevMap;
+                                    prevMapFrames[mapIndex] = currMap;
                                 }
-                                currMapFrames[mapIndex] = prevMap;
-                                prevMapFrames[mapIndex] = currMap;
-                            }
-                        });
+                            });
+                        }
                     } catch (Exception e) {
                         for (MapFrameUpdate update : frameUpdates.values()) {
                             update.freeMemory();
@@ -161,25 +177,33 @@ public class ImagePipeline {
                         throw e;
                     }
 
-                    ioTasks.add(storage.saveBundledFrameAsync(syncGroupId, fIndex, frameUpdates).whenComplete((v, ex) -> {
+                    CompletableFuture<Void> saved = storage.saveBundledFrameAsync(syncGroupId, fIndex, frameUpdates).whenComplete((v, ex) -> {
                         if (fIndex != 0) {
                             for (MapFrameUpdate update : frameUpdates.values()) {
                                 update.freeMemory();
                             }
                         }
-                    }));
+                    });
+                    ioTasks.add(saved);
+                    framesBeingSaved.add(saved);
+                    while (framesBeingSaved.size() > MAX_FRAMES_BEING_SAVED) {
+                        framesBeingSaved.poll().join();
+                    }
 
                     if (progressCallback != null) {
                         progressCallback.accept((double) (frameIndex + 1) / totalFramesCount);
                     }
                 }
 
-                gFinal.dispose();
-
                 CompletableFuture.allOf(ioTasks.toArray(new CompletableFuture[0])).join();
 
             } catch (Exception e) {
+                for (MapFrameUpdate update : firstFrameMap.values()) {
+                    update.freeMemory();
+                }
                 throw new RuntimeException("Failed to process image stream: " + e.getMessage(), e);
+            } finally {
+                if (bandGraphics != null) bandGraphics.dispose();
             }
             return firstFrameMap;
         }, vtExecutor);
