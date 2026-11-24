@@ -1,7 +1,7 @@
 name: Emage
 version: '${project.version}'
 main: net.ed1thy.emage.Emage
-api-version: '1.21'
+api-version: '26.3'
 authors: [ Ed1thy ]
 
 dependencies:
