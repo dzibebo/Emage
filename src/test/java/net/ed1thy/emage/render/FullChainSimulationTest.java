@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FullChainSimulationTest {
 
-    private static final int MIN_RATE = 262_144;
+    private static final int MIN_RATE = 32_768;
     private static final int MAX_RATE = 33_554_432;
     private static final long BASE_NANOS = 5_000_000_000L;
     private static final int TARGET_DELAY_MS = 30;
@@ -928,6 +928,27 @@ class FullChainSimulationTest {
             assertTrue(r[2] >= 17, "the cheap gifs must run at nearly full speed: " + r[2]);
             assertTrue(r[3] < 0.04, "added ping with the limit: " + r[3]);
             assertTrue(lastFrozenAtEnd >= 4, "gifs that do not fit the budget must be paused: " + lastFrozenAtEnd);
+        } finally {
+            testAdmission = false;
+            testMaxRate = MAX_RATE;
+        }
+    }
+
+    @Test
+    void theWorstConnectionsStillGetTheGifsThatFitSmoothlyAndALowPing() throws Exception {
+        int[][] specs = {{4, 256, 128, 8}, {3, 60, 128, 12}, {3, 4, 100, 20}};
+        double[][] links = {{150_000, 0.40}, {500_000, 0.25}, {2_000_000, 0.15}};
+        int idBase = 1600;
+        testAdmission = true;
+        testMaxRate = 8_388_608;
+        try {
+            for (double[] link : links) {
+                double[] r = runMixed(specs, link[0], link[1], 26, idBase);
+                idBase += 20;
+                System.out.printf("WORST link %4.2f MB/s, ping %3.0f ms: small gifs %4.1f/s of 20, big %4.1f/s, huge %4.1f/s, paused %d of 10, added ping p95 %3.0f ms%n",
+                        link[0] / 1e6, link[1] * 1000, r[2], r[1], r[0], lastFrozenAtEnd, r[3] * 1000);
+                assertTrue(r[3] < 0.30, "added ping on a weak connection: " + r[3]);
+            }
         } finally {
             testAdmission = false;
             testMaxRate = MAX_RATE;

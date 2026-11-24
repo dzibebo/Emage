@@ -20,6 +20,7 @@ class ConfigMigrationTest {
         YamlConfiguration config = parse("""
                 performance:
                   max-bytes-per-second-per-player: 2097152
+                  min-bytes-per-second-per-player: 262144
                   max-total-bytes-per-second: 16777216
                   target-queue-delay-ms: 80
                   animated-view-distance-blocks: 32
@@ -34,6 +35,7 @@ class ConfigMigrationTest {
         assertEquals(8388608, config.getInt("performance.max-bytes-per-second-per-player"));
         assertEquals(67108864, config.getInt("performance.max-total-bytes-per-second"));
         assertEquals(10, config.getInt("quality.max-gif-grid-size"));
+        assertEquals(32768, config.getInt("performance.min-bytes-per-second-per-player"));
         assertEquals(ConfigManager.CONFIG_VERSION, config.getInt("config-version"));
         assertFalse(ConfigManager.migrate(config), "a migrated config must not be touched again");
     }

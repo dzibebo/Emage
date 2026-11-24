@@ -1,4 +1,4 @@
-config-version: 5
+config-version: 6
 
 performance:
   max-packets-per-tick: 64
@@ -15,7 +15,7 @@ performance:
   # Hard cap for all players together (bytes per second). Encoding and compressing map packets costs CPU on the
   # network threads, so even many players joining at once cannot starve everyone else's connection.
   max-total-bytes-per-second: 67108864
-  min-bytes-per-second-per-player: 262144
+  min-bytes-per-second-per-player: 32768
   # How much map data may sit unsent in a player's network buffer at once (bytes). Lower = lower ping impact.
   max-pending-bytes-per-player: 98304
   # Emage measures how long its own data makes each player wait (a tiny ping packet every ~100 ms while pictures are

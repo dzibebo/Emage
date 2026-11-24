@@ -50,7 +50,7 @@ public class ConfigManager {
         this.plugin = plugin;
     }
 
-    public static final int CONFIG_VERSION = 5;
+    public static final int CONFIG_VERSION = 6;
 
     public static boolean migrate(@NotNull FileConfiguration config) {
         if (config.getInt("config-version", 1) >= CONFIG_VERSION) return false;
@@ -59,6 +59,7 @@ public class ConfigManager {
         upgradeDefault(config, "performance.target-queue-delay-ms", 80, 20);
         upgradeDefault(config, "performance.target-queue-delay-ms", 30, 20);
         upgradeDefault(config, "performance.max-bytes-per-second-per-player", 33554432, 8388608);
+        upgradeDefault(config, "performance.min-bytes-per-second-per-player", 262144, 32768);
         upgradeDefault(config, "performance.animated-view-distance-blocks", 32, 48);
         upgradeDefault(config, "quality.max-gif-grid-size", 5, 10);
         upgradeDefault(config, "quality.max-gif-grid-size", 16, 10);
@@ -86,7 +87,7 @@ public class ConfigManager {
         this.animatedViewDistanceBlocks = config.getInt("performance.animated-view-distance-blocks", 48);
         this.maxBytesPerSecondPerPlayer = Math.max(16384, config.getInt("performance.max-bytes-per-second-per-player", 8388608));
         this.maxTotalBytesPerSecond = Math.max(1048576, config.getInt("performance.max-total-bytes-per-second", 67108864));
-        this.minBytesPerSecondPerPlayer = Math.max(4096, config.getInt("performance.min-bytes-per-second-per-player", 262144));
+        this.minBytesPerSecondPerPlayer = Math.max(4096, config.getInt("performance.min-bytes-per-second-per-player", 32768));
         this.maxPendingBytesPerPlayer = Math.max(33000, config.getInt("performance.max-pending-bytes-per-player", 98304));
         this.targetQueueDelayMs = Math.max(20, config.getInt("performance.target-queue-delay-ms", 20));
         this.latencyProbe = config.getBoolean("performance.latency-probe", true);

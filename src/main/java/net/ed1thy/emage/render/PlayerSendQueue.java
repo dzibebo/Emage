@@ -32,7 +32,9 @@ final class PlayerSendQueue {
 
     private static final int MAX_PACKETS_PER_FLUSH = 256;
     private static final double BURST_SECONDS = 0.04;
-    private static final double INITIAL_RATE = 32_768;
+    private static final double BAND_SECONDS = 0.03;
+    private static final int MIN_BAND_BYTES = 1536;
+    private static final double INITIAL_RATE = 131_072;
     private static final double STILL_LOOKAHEAD_SECONDS = 0.35;
     private static final double OPTIMISTIC_CAPACITY = 4_194_304;
 
@@ -138,6 +140,19 @@ final class PlayerSendQueue {
         try {
             bytes = buf.readableBytes();
             if (buf.refCnt() <= 0 || bytes <= 0) return false;
+            int limit = maxPacketBytes();
+            if (bytes > limit) {
+                java.util.List<ByteBuf> bands = MapPacketSplitter.split(buf, limit);
+                if (bands != null && bands.size() > 1) {
+                    int bandTier = Math.max(0, Math.min(TIERS - 1, tier));
+                    for (ByteBuf band : bands) {
+                        tiers[bandTier].add(new DeltaFrame(source.frameIndex(), source.mapId(), band));
+                        size.incrementAndGet();
+                        tierBytes.addAndGet(bandTier, band.readableBytes());
+                    }
+                    return true;
+                }
+            }
             buf.retain();
         } catch (IllegalReferenceCountException e) {
             return false;
@@ -147,6 +162,11 @@ final class PlayerSendQueue {
         size.incrementAndGet();
         tierBytes.addAndGet(t, bytes);
         return true;
+    }
+
+    private int maxPacketBytes() {
+        double capacity = capacityEstimate();
+        return (int) Math.max(MIN_BAND_BYTES, Math.min(MAP_PACKET_BYTES, capacity * BAND_SECONDS));
     }
 
     int size() {
@@ -346,7 +366,7 @@ final class PlayerSendQueue {
         if (dt < 0) dt = 0;
         if (dt > 0.25) dt = 0.25;
         double rate = controller.rate();
-        double burst = Math.max(rate * BURST_SECONDS, MAP_PACKET_BYTES * 2.0);
+        double burst = Math.max(rate * BURST_SECONDS, Math.min(MAP_PACKET_BYTES * 2.0, maxPacketBytes() * 2.0));
         tokens = Math.min(tokens + rate * dt, burst);
 
         if (outstandingProbe != -1) {
