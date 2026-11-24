@@ -157,7 +157,7 @@ public class Emage extends JavaPlugin {
         }
         try {
             javax.imageio.spi.IIORegistry registry = javax.imageio.spi.IIORegistry.getDefaultInstance();
-            if (!registry.getServiceProviders(com.twelvemonkeys.imageio.plugins.webp.WebPImageReaderSpi.class, true).hasNext()) {
+            if (registry.getServiceProviderByClass(com.twelvemonkeys.imageio.plugins.webp.WebPImageReaderSpi.class) == null) {
                 registry.registerServiceProvider(new com.twelvemonkeys.imageio.plugins.webp.WebPImageReaderSpi());
             }
         } catch (Throwable t) {

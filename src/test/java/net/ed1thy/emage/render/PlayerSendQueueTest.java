@@ -5,6 +5,8 @@ import io.netty.buffer.Unpooled;
 import net.ed1thy.emage.model.DeltaFrame;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -90,7 +92,8 @@ class PlayerSendQueueTest {
         queue.add(still, 2);
 
         double withAnimation = queue.urgentDrainSeconds(0);
-        assertEquals(65_536 / PlayerSendQueue.initialRate(new PlayerSendQueue.Tuning(16_384, 16_777_216, 98_304, 80, false)), withAnimation, 1e-6);
+        assertEquals(65_536 / PlayerSendQueue.optimisticCapacity(16_777_216), withAnimation, 1e-6,
+                "before the connection speed is known the estimate must be optimistic, otherwise animations never start");
 
         queue.purge(Set.of(1));
         assertEquals(0.0, queue.urgentDrainSeconds(0), 1e-9, "still pictures must not count as animation backlog");
@@ -104,5 +107,67 @@ class PlayerSendQueueTest {
         assertFalse(PlayerSendQueue.isProbeId(0));
         assertFalse(PlayerSendQueue.isProbeId(-1));
         assertFalse(PlayerSendQueue.isProbeId(0x4D460000));
+    }
+
+    private static final class CountingTransport implements Transport {
+        int written;
+
+        @Override
+        public boolean isWritable() {
+            return true;
+        }
+
+        @Override
+        public long pendingBytes() {
+            return 0;
+        }
+
+        @Override
+        public boolean write(DeltaFrame source) {
+            written++;
+            return true;
+        }
+
+        @Override
+        public void flush() {
+        }
+
+        @Override
+        public boolean supportsProbe() {
+            return false;
+        }
+
+        @Override
+        public boolean sendProbe(int id) {
+            return false;
+        }
+    }
+
+    @Test
+    void everyReferenceTheQueueTookIsGivenBackWhetherSentPurgedOrDrained() {
+        PlayerSendQueue queue = newQueue();
+        List<DeltaFrame> parts = new ArrayList<>();
+        for (int i = 0; i < 60; i++) {
+            DeltaFrame part = part(i, 16_500);
+            parts.add(part);
+            assertTrue(queue.add(part, i % 4));
+        }
+        queue.purge(Set.of(3, 4, 5));
+
+        CountingTransport transport = new CountingTransport();
+        SendBudget budget = new SendBudget(100_000_000);
+        long now = 10_000_000_000L;
+        for (int i = 0; i < 20 && !queue.isEmpty(); i++) {
+            now += 20_000_000L;
+            budget.refill(now);
+            queue.flush(transport, budget, now);
+        }
+        assertTrue(transport.written > 0, "something must have been sent");
+        queue.drain();
+
+        for (DeltaFrame part : parts) {
+            assertEquals(1, part.packetBuf().refCnt(), "map " + part.mapId() + " kept a reference");
+        }
+        assertEquals(0, queue.size());
     }
 }
