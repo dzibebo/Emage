@@ -155,9 +155,15 @@ public class CommandRegistry {
         commandManager.command(builder.literal("debug")
                 .permission("emage.admin")
                 .handler(ctx -> {
-                    for (String line : renderManager.debugLines()) {
+                    java.util.List<String> compact = renderManager.debugLines(false);
+                    java.util.List<String> full = renderManager.debugLines(true);
+                    for (String line : compact) {
                         ctx.sender().getSender().sendMessage(net.kyori.adventure.text.Component.text(line));
                     }
+                    String saved = writeDebugDump(full);
+                    ctx.sender().getSender().sendMessage(net.kyori.adventure.text.Component.text(saved == null
+                            ? "Emage: could not save the full report"
+                            : "Emage: full report with every detail saved to " + saved));
                 })
         );
 
@@ -677,11 +683,34 @@ public class CommandRegistry {
         }
     }
 
+    private String writeDebugDump(java.util.List<String> lines) {
+        try {
+            java.io.File folder = new java.io.File(plugin.getDataFolder(), "debug");
+            if (!folder.isDirectory() && !folder.mkdirs()) return null;
+            String stamp = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+            java.io.File file = new java.io.File(folder, "report-" + stamp + ".txt");
+            java.nio.file.Files.write(file.toPath(), lines, java.nio.charset.StandardCharsets.UTF_8);
+            java.io.File[] old = folder.listFiles((dir, name) -> name.startsWith("report-") && name.endsWith(".txt"));
+            if (old != null && old.length > 20) {
+                java.util.Arrays.sort(old, java.util.Comparator.comparingLong(java.io.File::lastModified));
+                for (int i = 0; i < old.length - 20; i++) {
+                    java.nio.file.Files.deleteIfExists(old[i].toPath());
+                }
+            }
+            return "plugins/Emage/debug/" + file.getName();
+        } catch (Exception e) {
+            plugin.getLogger().warning("Could not write the debug report: " + e);
+            return null;
+        }
+    }
+
     private String getFriendlyErrorMessage(Throwable throwable) {
         Throwable cause = throwable;
         while (cause.getCause() != null) {
             cause = cause.getCause();
         }
+
+        String msg = cause.getMessage() == null ? "" : cause.getMessage();
 
         if (cause instanceof UnknownHostException) {
             return messageManager.getErrorUnknownHost();
@@ -691,26 +720,39 @@ public class CommandRegistry {
             return messageManager.getErrorConnect();
         } else if (cause instanceof javax.net.ssl.SSLException) {
             return messageManager.getErrorSsl();
-        } else if (cause instanceof SecurityException) {
-            String msg = cause.getMessage();
-            if (msg != null && (msg.contains("blocked internal IP") || msg.contains("blocked") || msg.contains("Cloud Metadata"))) {
-                return messageManager.getErrorBlocked();
-            }
-            return msg != null ? msg : messageManager.getErrorUnknown();
-        } else if (cause instanceof java.io.IOException && cause.getMessage() != null) {
-            String msg = cause.getMessage();
-            if (msg.contains("Download size limit exceeded")) {
-                return messageManager.getErrorSizeLimit();
-            }
-            if (msg.contains("Unsupported image format") || msg.contains("invalid image header")) {
-                return messageManager.getUnsupportedFormat();
-            }
-            if (msg.contains("exceed the safe limit")) {
-                return messageManager.getErrorDimensionsLimit();
-            }
         }
 
-        return cause.getMessage() != null ? cause.getMessage() : messageManager.getErrorUnknown();
+        if (msg.contains("blocked") || msg.contains("Cloud Metadata")) {
+            return messageManager.getErrorBlocked();
+        }
+        if (msg.contains("URL scheme")) {
+            return messageManager.getErrorBadScheme();
+        }
+        if (msg.contains("exceed the safe limit")) {
+            return messageManager.getErrorDimensionsLimit();
+        }
+        if (msg.contains("Download size limit exceeded") || msg.contains("file size exceeds")) {
+            return msg.contains("file size exceeds") ? messageManager.getErrorFileTooLarge() : messageManager.getErrorSizeLimit();
+        }
+        if (msg.contains("valid image MIME type")) {
+            int colon = msg.lastIndexOf(':');
+            return messageManager.getErrorNotImage(colon >= 0 ? msg.substring(colon + 1).trim() : null);
+        }
+        if (msg.contains("Unsupported image format") || msg.contains("invalid image header") || msg.contains("Failed to read image stream")) {
+            return messageManager.getUnsupportedFormat();
+        }
+        if (msg.contains("Exceeded maximum allowed redirects")) {
+            return messageManager.getErrorTooManyRedirects();
+        }
+        if (msg.contains("redirect status code")) {
+            return messageManager.getErrorBadRedirect();
+        }
+        if (msg.startsWith("HTTP Error:")) {
+            return messageManager.getErrorHttp(msg.substring("HTTP Error:".length()).trim());
+        }
+
+        plugin.getLogger().warning("Image error: " + throwable);
+        return messageManager.getErrorUnknown();
     }
 
     private void startImagePipeline(Player player, String url, GridUtil.GridData gridData) {
@@ -849,6 +891,28 @@ public class CommandRegistry {
                             return;
                         }
 
+                        final long heapPerMap = 16384L * (isAnimated ? 5L : 3L);
+                        final long nativePerMap = 33_000L;
+                        final long heapBase = 16L * 1024 * 1024;
+                        long maps = (long) finalColumns * finalRows;
+                        if (!net.ed1thy.emage.util.MemoryGuard.fits(maps * heapPerMap + heapBase, maps * nativePerMap)) {
+                            int fits = Math.max(finalColumns, finalRows);
+                            while (fits > 1) {
+                                fits--;
+                                long m = (long) fits * fits;
+                                if (net.ed1thy.emage.util.MemoryGuard.fits(m * heapPerMap + heapBase, m * nativePerMap)) break;
+                            }
+                            if (isAnimated) {
+                                messageManager.sendGifSizeLimit(player, fits, fits);
+                            } else {
+                                messageManager.sendImageSizeLimit(player, fits, fits);
+                            }
+                            messageManager.clearActionBar(player);
+                            revertLoadingSpinner(gridFrames);
+                            decrementTask.run();
+                            return;
+                        }
+
                         MapMetadata meta = repository.createSyncGroup(player.getUniqueId(), url, fileHash, finalColumns, finalRows, totalFrames, delayMs);
                         List<Integer> mapIds = repository.allocateVirtualMapIds(meta.syncGroupID(), finalColumns * finalRows);
 
@@ -926,8 +990,11 @@ public class CommandRegistry {
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     SyncGroup group = renderManager.getSyncGroup(meta.syncGroupID());
                     List<ItemFrame> wallFrames = findContiguousEmageFrames(clickedFrame, groupMapIds);
+                    Set<Integer> removedMapIds = new HashSet<>();
 
                     for (ItemFrame f : wallFrames) {
+                        Integer frameMapId = f.getPersistentDataContainer().get(interactListener.getEmageKey(), PersistentDataType.INTEGER);
+                        if (frameMapId != null) removedMapIds.add(frameMapId);
                         f.getPersistentDataContainer().remove(interactListener.getEmageKey());
                         f.getPersistentDataContainer().remove(interactListener.getLoadingKey());
                         f.setItem(new ItemStack(Material.AIR));
@@ -942,7 +1009,7 @@ public class CommandRegistry {
                     if (group != null && group.getNodes().isEmpty()) {
                         renderManager.unregisterSyncGroup(meta.syncGroupID());
                     }
-                    renderManager.clearQueue(player.getUniqueId());
+                    renderManager.purgeMapsForAll(removedMapIds);
 
                     messageManager.sendGridRemoved(player);
 
