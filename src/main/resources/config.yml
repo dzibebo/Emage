@@ -1,22 +1,29 @@
+config-version: 4
+
 performance:
   max-packets-per-tick: 64
   view-distance-blocks: 96
-  # Animated pictures (GIFs) use much more traffic, so they are only streamed to players this close (0 = same as above).
-  animated-view-distance-blocks: 64
+  # GIFs only animate for players this close (measured to the nearest frame of the picture). Farther away they show
+  # a still frame, which costs no traffic at all. 0 = animate everywhere within view-distance-blocks.
+  animated-view-distance-blocks: 48
   # Map data is sent to each player through an adaptive limiter so slow connections are not flooded
   # (a flooded connection makes ping explode and can time the player out).
-  # The speed starts low and grows/shrinks automatically between these two bounds (bytes per second).
-  max-bytes-per-second-per-player: 16777216
+  # The speed starts low, grows quickly and then follows each player's real connection: it backs off by itself as soon
+  # as the player's ping starts to rise. These are only the outer bounds (bytes per second), so the maximum can be
+  # generous: a player on a fast connection gets big gifs at full speed, a player on a weak one gets what fits.
+  max-bytes-per-second-per-player: 33554432
   # Hard cap for all players together (bytes per second). Encoding and compressing map packets costs CPU on the
   # network threads, so even many players joining at once cannot starve everyone else's connection.
-  max-total-bytes-per-second: 41943040
-  min-bytes-per-second-per-player: 16384
+  max-total-bytes-per-second: 67108864
+  min-bytes-per-second-per-player: 262144
   # How much map data may sit unsent in a player's network buffer at once (bytes). Lower = lower ping impact.
   max-pending-bytes-per-player: 98304
-  # Emage measures how long its own data makes each player wait (a tiny ping packet every ~150 ms while pictures are
-  # being sent) and slows down for that player when the wait exceeds this many milliseconds.
-  # Lower = smoother ping on weak connections but slower loading for them.
-  target-queue-delay-ms: 80
+  # Emage measures how long its own data makes each player wait (a tiny ping packet every ~100 ms while pictures are
+  # being sent) and slows down for that player as soon as the wait exceeds about 1.5x this many milliseconds, so the
+  # extra ping caused by pictures stays around this value. Short random spikes (VPN, far-away players) are filtered out.
+  # Lower = ping stays closer to the real one but GIFs get less speed; higher = faster GIFs and more extra ping.
+  # Typical choices: 20 (lowest allowed), 30 (default), 60, 100. /emage debug shows the measured values for every player.
+  target-queue-delay-ms: 30
   # Set to false to rely only on the network buffer fill level (for clients/proxies that mishandle ping packets).
   latency-probe: true
 
@@ -27,7 +34,7 @@ storage:
 
 quality:
   max-gif-frames: 240
-  max-gif-grid-size: 5
+  max-gif-grid-size: 16
   max-image-grid-size: 16
 
 downloads:
@@ -40,6 +47,9 @@ downloads:
 cache:
   max-memory-mb: 100
   expire-minutes: 30
+  # Pictures nobody has been near for this many seconds release their map data from memory and load it again when
+  # a player comes back. Keeps memory use proportional to what players are actually looking at (0 = never release).
+  idle-release-seconds: 300
 
 rate-limits:
   cooldown-seconds: 5
@@ -54,7 +64,7 @@ feedback:
     start: "block.note_block.chime"
 
 messages:
-  prefix: "<#CDDEDF> ꜰ<#C7DDD3>ᴏ<#C1DDC6>x<#BEDDC0>ᴡ<#BBDCBA>ᴀ<#AEDCBD>ʀ<#A1DCC0>д <#94DCC3>▢ <white>"
+  prefix: "<#CDDEDF> ꜰ<#C7DDD3>ᴏ<#C1DDC6>x<#BEDDC0>ᴡ<#BBDCBA>ᴀ<#AEDCBD>ʀ<#A1DCC0>ᴅ <#94DCC3>▢ <white>"
 
   usage: "<white>иᴄпᴏльзᴏʙᴀʜиᴇ: <#D4EECC>/emage apply <url> [колонки] [строки]</#D4EECC></white>"
   no-frame: "<white>ʙы дᴏлжʜы ᴄᴍᴏᴛᴘᴇᴛь ʜᴀ ᴘᴀᴍᴋу для пᴘᴇдᴍᴇᴛᴀ!</white>"
@@ -106,3 +116,9 @@ messages:
   error-dimensions-limit: "ᴘᴀзᴘᴇшᴇʜиᴇ изᴏбᴘᴀжᴇʜия пᴘᴇʙышᴀᴇᴛ дᴏпуᴄᴛиᴍый бᴇзᴏпᴀᴄʜый пᴘᴇдᴇл"
   error-blocked: "дᴏᴄᴛуп ᴋ уᴋᴀзᴀʜʜᴏᴍу ɪᴘ-ᴀдᴘᴇᴄу или ᴘᴇᴄуᴘᴄу зᴀблᴏᴋиᴘᴏʙᴀʜ ʙ цᴇляx бᴇзᴏпᴀᴄʜᴏᴄᴛи"
   error-unknown: "пᴘᴏизᴏшлᴀ ʜᴇизʙᴇᴄᴛʜᴀя ᴏшибᴋᴀ"
+  error-file-too-large: "ᴘᴀзᴍᴇᴘ фᴀйлᴀ пᴘᴇʙышᴀᴇᴛ дᴏпуᴄᴛиᴍый лиᴍиᴛ"
+  error-not-image: "ᴄᴄылᴋᴀ ʜᴇ ʙᴇдёᴛ ʜᴀ изᴏбᴘᴀжᴇʜиᴇ (ᴛип: <type>)"
+  error-too-many-redirects: "ᴄлишᴋᴏᴍ ᴍʜᴏгᴏ пᴇᴘᴇʜᴀпᴘᴀʙлᴇʜий пᴏ ᴄᴄылᴋᴇ"
+  error-bad-redirect: "ᴄᴇᴘʙᴇᴘ ʙᴇᴘʜул ʜᴇᴋᴏᴘᴘᴇᴋᴛʜᴏᴇ пᴇᴘᴇʜᴀпᴘᴀʙлᴇʜиᴇ"
+  error-http: "ᴄᴇᴘʙᴇᴘ ᴏᴛʙᴇᴛил ᴏшибᴋᴏй <code>"
+  error-bad-scheme: "ᴄᴄылᴋᴀ дᴏлжʜᴀ ʜᴀчиʜᴀᴛьᴄя ᴄ ʜᴛᴛᴘ или ʜᴛᴛᴘꜱ"

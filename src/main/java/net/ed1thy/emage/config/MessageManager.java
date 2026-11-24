@@ -61,6 +61,12 @@ public class MessageManager {
     private String errorSizeLimit;
     private String errorDimensionsLimit;
     private String errorBlocked;
+    private String errorFileTooLarge;
+    private String errorNotImage;
+    private String errorTooManyRedirects;
+    private String errorBadRedirect;
+    private String errorHttp;
+    private String errorBadScheme;
     private String errorUnknown;
 
     private Sound successSound;
@@ -75,7 +81,8 @@ public class MessageManager {
     public void load() {
         FileConfiguration config = configManager.getRawConfig();
 
-        String rawPrefix = config.getString("messages.prefix", "<b><gradient:#F57E3A:#CB6E38:#C36220>Emage</gradient></b> <dark_gray>•</dark_gray> ");
+        String rawPrefix = config.getString("messages.prefix", "<b><gradient:#F57E3A:#CB6E38:#C36220>Emage</gradient></b> <dark_gray>•</dark_gray> ")
+                .replace("<#A1DCC0>д", "<#A1DCC0>ᴅ");
         this.prefix = miniMessage.deserialize(rawPrefix);
 
         this.usage = prefix.append(miniMessage.deserialize(config.getString("messages.usage", "<red>Использование: <gray>/emage apply <url> [колонки] [строки]")));
@@ -126,6 +133,12 @@ public class MessageManager {
         this.errorDimensionsLimit = config.getString("messages.error-dimensions-limit", "Разрешение изображения превышает допустимый безопасный предел.");
         this.errorBlocked = config.getString("messages.error-blocked", "Доступ к указанному IP-адресу или ресурсу заблокирован в целях безопасности.");
         this.errorUnknown = config.getString("messages.error-unknown", "Произошла неизвестная ошибка.");
+        this.errorFileTooLarge = config.getString("messages.error-file-too-large", "ᴘᴀзᴍᴇᴘ фᴀйлᴀ пᴘᴇʙышᴀᴇᴛ дᴏпуᴄᴛиᴍый лиᴍиᴛ");
+        this.errorNotImage = config.getString("messages.error-not-image", "ᴄᴄылᴋᴀ ʜᴇ ʙᴇдёᴛ ʜᴀ изᴏбᴘᴀжᴇʜиᴇ (ᴛип: <type>)");
+        this.errorTooManyRedirects = config.getString("messages.error-too-many-redirects", "ᴄлишᴋᴏᴍ ᴍʜᴏгᴏ пᴇᴘᴇʜᴀпᴘᴀʙлᴇʜий пᴏ ᴄᴄылᴋᴇ");
+        this.errorBadRedirect = config.getString("messages.error-bad-redirect", "ᴄᴇᴘʙᴇᴘ ʙᴇᴘʜул ʜᴇᴋᴏᴘᴘᴇᴋᴛʜᴏᴇ пᴇᴘᴇʜᴀпᴘᴀʙлᴇʜиᴇ");
+        this.errorHttp = config.getString("messages.error-http", "ᴄᴇᴘʙᴇᴘ ᴏᴛʙᴇᴛил ᴏшибᴋᴏй <code>");
+        this.errorBadScheme = config.getString("messages.error-bad-scheme", "ᴄᴄылᴋᴀ дᴏлжʜᴀ ʜᴀчиʜᴀᴛьᴄя ᴄ ʜᴛᴛᴘ или ʜᴛᴛᴘꜱ");
 
         if (configManager.enableSounds) {
             try { this.successSound = Sound.sound(Key.key(configManager.soundSuccess), Sound.Source.MASTER, 0.6f, 1.0f); } catch (Exception ignored) {}
@@ -277,6 +290,30 @@ public class MessageManager {
 
     public String getUnsupportedFormat() {
         return unsupportedFormat;
+    }
+
+    public String getErrorFileTooLarge() {
+        return errorFileTooLarge;
+    }
+
+    public String getErrorNotImage(String type) {
+        return errorNotImage.replace("<type>", type == null ? "?" : type);
+    }
+
+    public String getErrorTooManyRedirects() {
+        return errorTooManyRedirects;
+    }
+
+    public String getErrorBadRedirect() {
+        return errorBadRedirect;
+    }
+
+    public String getErrorHttp(String code) {
+        return errorHttp.replace("<code>", code == null ? "?" : code);
+    }
+
+    public String getErrorBadScheme() {
+        return errorBadScheme;
     }
 
     public String getErrorUnknownHost() {
