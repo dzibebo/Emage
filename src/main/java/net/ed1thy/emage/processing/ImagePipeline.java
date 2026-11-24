@@ -13,6 +13,7 @@ import java.awt.AlphaComposite;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferInt;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -71,7 +72,7 @@ public class ImagePipeline {
                 gFinal.setRenderingHint(RenderingHints.KEY_COLOR_RENDERING, RenderingHints.VALUE_COLOR_RENDER_QUALITY);
                 gFinal.setComposite(AlphaComposite.Src);
 
-                int[] argbPixels = new int[totalWidth * totalHeight];
+                int[] argbPixels = ((DataBufferInt) scaledImage.getRaster().getDataBuffer()).getData();
                 byte[] ditheredColors = new byte[totalWidth * totalHeight];
                 BufferedImage rawImage = null;
 
@@ -91,18 +92,20 @@ public class ImagePipeline {
                 ioTasks.add(storage.saveFrameDelaysAsync(syncGroupId, frameDelays));
 
                 for (int frameIndex = 0; frameIndex < totalFramesCount; frameIndex++) {
-                    int rawWidth = decoder.getFrameWidth(frameIndex);
-                    int rawHeight = decoder.getFrameHeight(frameIndex);
-                    int[] rawPixels = decoder.getFramePixels(frameIndex);
+                    BufferedImage source = decoder.getFrameImage(frameIndex);
+                    if (source == null) {
+                        int rawWidth = decoder.getFrameWidth(frameIndex);
+                        int rawHeight = decoder.getFrameHeight(frameIndex);
+                        int[] rawPixels = decoder.getFramePixels(frameIndex);
 
-                    if (rawImage == null || rawImage.getWidth() != rawWidth || rawImage.getHeight() != rawHeight) {
-                        rawImage = new BufferedImage(rawWidth, rawHeight, BufferedImage.TYPE_INT_ARGB);
+                        if (rawImage == null || rawImage.getWidth() != rawWidth || rawImage.getHeight() != rawHeight) {
+                            rawImage = new BufferedImage(rawWidth, rawHeight, BufferedImage.TYPE_INT_ARGB);
+                        }
+                        rawImage.setRGB(0, 0, rawWidth, rawHeight, rawPixels, 0, rawWidth);
+                        source = rawImage;
                     }
-                    rawImage.setRGB(0, 0, rawWidth, rawHeight, rawPixels, 0, rawWidth);
 
-                    gFinal.drawImage(rawImage, 0, 0, totalWidth, totalHeight, null);
-
-                    scaledImage.getRGB(0, 0, totalWidth, totalHeight, argbPixels, 0, totalWidth);
+                    gFinal.drawImage(source, 0, 0, totalWidth, totalHeight, null);
                     dither.applyDither(argbPixels, totalWidth, totalHeight, lut, ditheredColors);
 
                     final boolean firstFrame = (frameIndex == 0);

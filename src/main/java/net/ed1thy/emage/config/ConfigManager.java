@@ -11,6 +11,13 @@ public class ConfigManager {
 
     public int maxPacketsPerTick;
     public int viewDistanceBlocks;
+    public int animatedViewDistanceBlocks;
+    public int maxBytesPerSecondPerPlayer;
+    public int minBytesPerSecondPerPlayer;
+    public int maxPendingBytesPerPlayer;
+    public int maxTotalBytesPerSecond;
+    public int targetQueueDelayMs;
+    public boolean latencyProbe;
 
     public String dbFileName;
     public int dbPoolSize;
@@ -48,6 +55,13 @@ public class ConfigManager {
 
         this.maxPacketsPerTick = config.getInt("performance.max-packets-per-tick", 64);
         this.viewDistanceBlocks = config.getInt("performance.view-distance-blocks", 96);
+        this.animatedViewDistanceBlocks = config.getInt("performance.animated-view-distance-blocks", 64);
+        this.maxBytesPerSecondPerPlayer = Math.max(16384, config.getInt("performance.max-bytes-per-second-per-player", 16777216));
+        this.maxTotalBytesPerSecond = Math.max(1048576, config.getInt("performance.max-total-bytes-per-second", 41943040));
+        this.minBytesPerSecondPerPlayer = Math.max(4096, config.getInt("performance.min-bytes-per-second-per-player", 16384));
+        this.maxPendingBytesPerPlayer = Math.max(33000, config.getInt("performance.max-pending-bytes-per-player", 98304));
+        this.targetQueueDelayMs = Math.max(20, config.getInt("performance.target-queue-delay-ms", 80));
+        this.latencyProbe = config.getBoolean("performance.latency-probe", true);
 
         this.dbFileName = config.getString("storage.database.file-name", "emage_meta.db");
         this.dbPoolSize = config.getInt("storage.database.pool-size", 2);

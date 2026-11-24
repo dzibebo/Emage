@@ -15,9 +15,9 @@ class CloudCompatibilityTest {
             assertNotNull(is, "ItemStackParser$ModernParser.class should be present in the classpath");
             byte[] bytes = is.readAllBytes();
             String content = new String(bytes, StandardCharsets.ISO_8859_1);
-            assertTrue(content.contains("asBukkitMirror"), 
+            assertTrue(content.contains("asBukkitMirror"),
                     "Cloud-bukkit MUST contain asBukkitMirror lookup for Paper 26.3+ compatibility");
-            assertTrue(content.contains("asBukkitCopy, asCraftMirror or asBukkitMirror"), 
+            assertTrue(content.contains("asBukkitCopy, asCraftMirror or asBukkitMirror"),
                     "Cloud-bukkit error message should verify support for asBukkitMirror");
         }
     }

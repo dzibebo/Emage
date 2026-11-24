@@ -152,6 +152,15 @@ public class CommandRegistry {
                 })
         );
 
+        commandManager.command(builder.literal("debug")
+                .permission("emage.admin")
+                .handler(ctx -> {
+                    for (String line : renderManager.debugLines()) {
+                        ctx.sender().getSender().sendMessage(net.kyori.adventure.text.Component.text(line));
+                    }
+                })
+        );
+
         commandManager.command(builder.literal("reload")
                 .permission("emage.admin")
                 .handler(ctx -> {
@@ -594,7 +603,7 @@ public class CommandRegistry {
 
                 int frameYawIndex = Math.round(currentFrame.getLocation().getYaw() / 90f) & 3;
                 int rotationSteps = 0;
-                
+
                 if (currentFrame.getFacing() == org.bukkit.block.BlockFace.DOWN) {
                     rotationSteps = (frameYawIndex - clickedYawIndex);
                 } else if (currentFrame.getFacing() == org.bukkit.block.BlockFace.UP) {
@@ -657,8 +666,8 @@ public class CommandRegistry {
             }
 
             org.bukkit.Location loc = gridFrames.get(0).getLocation();
-            plugin.getLogger().info("Player " + player.getName() + " placed image: " + meta.sourceUrl() + 
-                                    " at X:" + loc.getBlockX() + " Y:" + loc.getBlockY() + " Z:" + loc.getBlockZ() + 
+            plugin.getLogger().info("Player " + player.getName() + " placed image: " + meta.sourceUrl() +
+                                    " at X:" + loc.getBlockX() + " Y:" + loc.getBlockY() + " Z:" + loc.getBlockZ() +
                                     " in world " + loc.getWorld().getName());
 
             messageManager.clearActionBar(player);
@@ -793,7 +802,7 @@ public class CommandRegistry {
                         ImageFrameProvider provider;
 
                         if (isGif) {
-                            net.ed1thy.emage.processing.GifDecoder gifDecoder = new net.ed1thy.emage.processing.GifDecoder();
+                            net.ed1thy.emage.processing.GifDecoder gifDecoder = new net.ed1thy.emage.processing.GifDecoder(configManager.maxGifFrames);
                             gifDecoder.read(imageBytes);
                             provider = gifDecoder;
                         } else {
@@ -978,7 +987,7 @@ public class CommandRegistry {
                 MapMetadata meta = metaOpt.get();
                 org.bukkit.OfflinePlayer creator = Bukkit.getOfflinePlayer(meta.creatorUUID());
                 String authorName = creator.getName() != null ? creator.getName() : meta.creatorUUID().toString();
-                String dateStr = "Неизвестно";
+                String dateStr = messageManager.getInfoUnknownDate();
                 if (meta.createdAt() > 0) {
                     java.time.Instant instant = java.time.Instant.ofEpochMilli(meta.createdAt());
                     java.time.format.DateTimeFormatter formatter = java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss")

@@ -14,9 +14,11 @@ import org.bukkit.util.Vector;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -25,6 +27,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 
 public class SyncGroup {
+
+    private static final int PREFETCH_FRAMES = 2;
+
+    private static final double ANIMATION_START_DRAIN_SECONDS = 1.0;
+    private static final double ANIMATION_MAX_DRAIN_SECONDS = 1.5;
+
+    private static final long LOAD_RETRY_NANOS = 250_000_000L;
 
     private final MapMetadata metadata;
     private final List<FrameNode> nodes;
@@ -37,19 +46,27 @@ public class SyncGroup {
 
     private final Map<Integer, MapFrameUpdate> baseFrames = new ConcurrentHashMap<>();
     private final Set<Integer> loadingFrames = ConcurrentHashMap.newKeySet();
+    private final Map<Integer, Long> lastLoadAttempt = new ConcurrentHashMap<>();
 
     private final Map<UUID, Set<Integer>> initializedMapsPerUser = new ConcurrentHashMap<>();
+    private final Set<UUID> inRangePlayers = ConcurrentHashMap.newKeySet();
     private final Set<UUID> visiblePlayers = ConcurrentHashMap.newKeySet();
     private final Set<Integer> ownedMapIds = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, double[]> playerViews = new ConcurrentHashMap<>();
+
+    private final Set<UUID> animSynced = ConcurrentHashMap.newKeySet();
 
     private final List<Location> centerLocs = new CopyOnWriteArrayList<>();
     private volatile World world;
+    private volatile RenderManager renderManager;
 
-    private int[] frameDelays;
+    private volatile int[] frameDelays;
+    private volatile boolean animated;
 
     private volatile double minX, minY, minZ, maxX, maxY, maxZ;
-    private final double viewDistance;
-    private final double viewDistanceSquared;
+    private final double baseViewDistance;
+    private volatile double viewDistance;
+    private volatile double viewDistanceSquared;
 
     public SyncGroup(@NotNull MapMetadata metadata, @NotNull List<FrameNode> nodes,
                      @NotNull FlatFileStorage flatFileStorage, @NotNull Cache<Long, MapFrameUpdate> frameCache,
@@ -66,56 +83,74 @@ public class SyncGroup {
         this.flatFileStorage = flatFileStorage;
         this.frameCache = frameCache;
         this.vtExecutor = vtExecutor;
-        this.viewDistance = viewDistance > 0 ? viewDistance : 96.0;
-        this.viewDistanceSquared = this.viewDistance * this.viewDistance;
+        this.baseViewDistance = viewDistance > 0 ? viewDistance : 96.0;
+        this.animated = metadata.isAnimated();
+        setViewDistance(this.baseViewDistance);
+
+        for (FrameNode n : nodes) ownedMapIds.add(n.getMapID());
 
         if (preloadedBaseFrames != null) {
             for (Map.Entry<Integer, MapFrameUpdate> entry : preloadedBaseFrames.entrySet()) {
-                MapFrameUpdate update = entry.getValue();
-                baseFrames.put(entry.getKey(), update);
-                update.retain();
-                long key = (0L << 32) | (entry.getKey() & 0xFFFFFFFFL);
-                frameCache.put(key, update);
+                installFrame(0, entry.getKey(), entry.getValue());
             }
         } else {
-            loadingFrames.add(0);
+            loadFrameAsync(0);
         }
 
-        CompletableFuture.runAsync(() -> {
-            try {
-                if (preloadedBaseFrames == null) {
-                    Map<Integer, MapFrameUpdate> f0Bundle = flatFileStorage.loadBundledFrame(metadata.syncGroupID(), 0);
-                    for (Map.Entry<Integer, MapFrameUpdate> entry : f0Bundle.entrySet()) {
-                        MapFrameUpdate update = entry.getValue();
-                        baseFrames.put(entry.getKey(), update);
-                        update.retain();
-                        long key = (0L << 32) | (entry.getKey() & 0xFFFFFFFFL);
-                        frameCache.put(key, update);
-                    }
-                }
-
-                frameDelays = flatFileStorage.loadFrameDelays(metadata.syncGroupID());
-                if (frameDelays == null || frameDelays.length == 0) {
-                    frameDelays = new int[] { metadata.delayMs() };
-                }
-            } catch (Exception ignored) {
-            } finally {
-                if (preloadedBaseFrames == null) {
-                    loadingFrames.remove(0);
-                }
-            }
-        }, vtExecutor);
-
-        if (frameDelays == null) {
-            frameDelays = new int[] { metadata.delayMs() };
-        }
-
-        for (FrameNode n : nodes) ownedMapIds.add(n.getMapID());
+        this.frameDelays = new int[] { metadata.delayMs() };
+        CompletableFuture.runAsync(this::loadAnimationInfo, vtExecutor);
 
         if (!nodes.isEmpty()) {
             this.world = Bukkit.getWorld(nodes.get(0).getWorldUUID());
             addNewWallBounds(nodes);
         }
+    }
+
+    private void loadAnimationInfo() {
+        try {
+            int[] delays = flatFileStorage.loadFrameDelays(metadata.syncGroupID());
+            if (delays != null && delays.length > 0) {
+                this.frameDelays = delays;
+            }
+
+            if (metadata.isAnimated()) {
+                boolean anyMotion = false;
+                for (int frame = 1; frame < metadata.totalFrames(); frame++) {
+                    if (flatFileStorage.hasFrameData(metadata.syncGroupID(), frame)) {
+                        anyMotion = true;
+                        break;
+                    }
+                }
+                if (!anyMotion) {
+                    this.animated = false;
+                    animSynced.clear();
+                    refreshViewDistance();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void setViewDistance(double distance) {
+        this.viewDistance = distance;
+        this.viewDistanceSquared = distance * distance;
+    }
+
+    private void refreshViewDistance() {
+        double distance = baseViewDistance;
+        RenderManager manager = this.renderManager;
+        if (animated && manager != null) {
+            double animatedDistance = manager.getAnimatedViewDistance();
+            if (animatedDistance > 0 && animatedDistance < distance) {
+                distance = animatedDistance;
+            }
+        }
+        setViewDistance(distance);
+    }
+
+    public void attach(@NotNull RenderManager renderManager) {
+        this.renderManager = renderManager;
+        refreshViewDistance();
     }
 
     public void addNewWall(List<FrameNode> newNodes) {
@@ -157,50 +192,81 @@ public class SyncGroup {
             checkPlayerVisibility(player);
         }
 
-        visiblePlayers.removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
+        inRangePlayers.removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
+        visiblePlayers.removeIf(uuid -> !inRangePlayers.contains(uuid));
+        animSynced.removeIf(uuid -> !visiblePlayers.contains(uuid));
+        playerViews.keySet().removeIf(uuid -> !inRangePlayers.contains(uuid));
         initializedMapsPerUser.keySet().removeIf(uuid -> Bukkit.getPlayer(uuid) == null);
     }
 
+    private void markNotVisible(@NotNull UUID uuid) {
+        visiblePlayers.remove(uuid);
+        animSynced.remove(uuid);
+    }
+
+    private void onLeftRange(@NotNull UUID uuid) {
+        boolean wasInRange = inRangePlayers.remove(uuid);
+        markNotVisible(uuid);
+        playerViews.remove(uuid);
+        RenderManager manager = this.renderManager;
+        if (wasInRange && manager != null && manager.hasPendingPackets(uuid)) {
+            manager.requestPurge(uuid, ownedMapIds, this);
+        }
+    }
+
     public void checkPlayerVisibility(@NotNull Player player) {
+        UUID uuid = player.getUniqueId();
         if (world == null || centerLocs.isEmpty() || !player.getWorld().equals(world)) {
-            visiblePlayers.remove(player.getUniqueId());
+            onLeftRange(uuid);
             return;
         }
 
         Location pLoc = player.getLocation();
+        double viewDistance = this.viewDistance;
         if (pLoc.getX() < minX - viewDistance || pLoc.getX() > maxX + viewDistance ||
                 pLoc.getY() < minY - viewDistance || pLoc.getY() > maxY + viewDistance ||
                 pLoc.getZ() < minZ - viewDistance || pLoc.getZ() > maxZ + viewDistance) {
-            visiblePlayers.remove(player.getUniqueId());
+            onLeftRange(uuid);
             return;
         }
 
-        UUID uuid = player.getUniqueId();
-
         boolean inRange = false;
+        double rangeSquared = this.viewDistanceSquared;
         for (Location center : centerLocs) {
-            if (center.distanceSquared(pLoc) <= viewDistanceSquared) {
+            if (center.distanceSquared(pLoc) <= rangeSquared) {
                 inRange = true;
                 break;
             }
         }
         if (!inRange) {
-            visiblePlayers.remove(uuid);
+            onLeftRange(uuid);
             return;
         }
 
         Location eyeLoc = player.getEyeLocation();
         Vector lookDir = eyeLoc.getDirection();
 
+        double[] view = playerViews.computeIfAbsent(uuid, k -> new double[6]);
+        view[0] = eyeLoc.getX();
+        view[1] = eyeLoc.getY();
+        view[2] = eyeLoc.getZ();
+        view[3] = lookDir.getX();
+        view[4] = lookDir.getY();
+        view[5] = lookDir.getZ();
+        inRangePlayers.add(uuid);
+
         if (calculateVisibility(eyeLoc, lookDir)) {
             visiblePlayers.add(uuid);
         } else {
-            visiblePlayers.remove(uuid);
+            markNotVisible(uuid);
         }
     }
 
     public void onPlayerQuit(@NotNull UUID uuid) {
+        inRangePlayers.remove(uuid);
         visiblePlayers.remove(uuid);
+        animSynced.remove(uuid);
+        playerViews.remove(uuid);
         initializedMapsPerUser.remove(uuid);
     }
 
@@ -219,7 +285,16 @@ public class SyncGroup {
     }
 
     public void clearUserState(@NotNull UUID uuid) {
+        animSynced.remove(uuid);
         initializedMapsPerUser.remove(uuid);
+    }
+
+    public void forgetMaps(@NotNull UUID uuid, @NotNull Set<Integer> mapIds) {
+        animSynced.remove(uuid);
+        Set<Integer> sent = initializedMapsPerUser.get(uuid);
+        if (sent != null) {
+            sent.removeAll(mapIds);
+        }
     }
 
     public void markNodeInitialized(@NotNull UUID uuid, int mapId) {
@@ -229,9 +304,11 @@ public class SyncGroup {
     public void invalidateNodes(@NotNull UUID uuid, @NotNull List<FrameNode> unrenderedNodes) {
         Set<Integer> sent = initializedMapsPerUser.get(uuid);
         if (sent != null) {
+            boolean removedAny = false;
             for (FrameNode node : unrenderedNodes) {
-                sent.remove(node.getMapID());
+                removedAny |= sent.remove(node.getMapID());
             }
+            if (removedAny) animSynced.remove(uuid);
         }
     }
 
@@ -266,9 +343,86 @@ public class SyncGroup {
         return (tx * dx + ty * dy + tz * dz) > 0.0;
     }
 
+    private static long cacheKey(int frame, int mapId) {
+        return ((long) frame << 32) | (mapId & 0xFFFFFFFFL);
+    }
+
+    private void installFrame(int frame, int mapId, @NotNull MapFrameUpdate update) {
+        if (frame == 0) {
+            update.retain();
+            MapFrameUpdate old = baseFrames.put(mapId, update);
+            if (old != null && old != update) {
+                old.freeMemory();
+            }
+        }
+        frameCache.put(cacheKey(frame, mapId), update);
+    }
+
+    @Nullable
+    private MapFrameUpdate frameFor(int frame, int mapId) {
+        MapFrameUpdate update = frameCache.getIfPresent(cacheKey(frame, mapId));
+        if (update != null && !update.isFreed()) return update;
+        if (frame == 0) {
+            MapFrameUpdate base = baseFrames.get(mapId);
+            if (base != null && !base.isFreed()) {
+                try {
+                    base.retain();
+                } catch (RuntimeException e) {
+                    return null;
+                }
+                frameCache.put(cacheKey(0, mapId), base);
+                return base;
+            }
+        }
+        return null;
+    }
+
+    private boolean isFrameReady(int frame) {
+        for (FrameNode node : nodes) {
+            if (frameFor(frame, node.getMapID()) == null) return false;
+        }
+        return true;
+    }
+
+    private void loadFrameAsync(int frame) {
+        long now = System.nanoTime();
+        Long last = lastLoadAttempt.get(frame);
+        if (last != null && now - last < LOAD_RETRY_NANOS) return;
+        if (!loadingFrames.add(frame)) return;
+        lastLoadAttempt.put(frame, now);
+        CompletableFuture.runAsync(() -> {
+            try {
+                Map<Integer, MapFrameUpdate> bundled = flatFileStorage.loadBundledFrame(metadata.syncGroupID(), frame);
+                for (FrameNode node : nodes) {
+                    int mapId = node.getMapID();
+                    MapFrameUpdate update = bundled.remove(mapId);
+                    if (update == null) {
+                        if (frame == 0) continue;
+                        update = new MapFrameUpdate(new DeltaFrame[0]);
+                    }
+                    installFrame(frame, mapId, update);
+                }
+                for (Map.Entry<Integer, MapFrameUpdate> rest : bundled.entrySet()) {
+                    if (frame == 0) {
+                        installFrame(0, rest.getKey(), rest.getValue());
+                    } else {
+                        rest.getValue().freeMemory();
+                    }
+                }
+            } catch (Exception ignored) {
+            } finally {
+                loadingFrames.remove(frame);
+            }
+        }, vtExecutor);
+    }
+
+    private int frameCount() {
+        return Math.max(1, metadata.totalFrames());
+    }
+
     public boolean shouldTick(long currentTimeMillis) {
-        if (!metadata.isAnimated()) {
-            for (UUID uuid : visiblePlayers) {
+        if (!animated) {
+            for (UUID uuid : inRangePlayers) {
                 Set<Integer> sent = initializedMapsPerUser.get(uuid);
                 if (sent == null || sent.size() < nodes.size()) {
                     return true;
@@ -276,144 +430,200 @@ public class SyncGroup {
             }
             return (currentTimeMillis - lastTickTime) >= 1000;
         }
-        int delay = (frameDelays != null && currentFrameIndex < frameDelays.length) ? frameDelays[currentFrameIndex] : metadata.delayMs();
+        int[] delays = frameDelays;
+        int delay = (delays != null && currentFrameIndex < delays.length) ? delays[currentFrameIndex] : metadata.delayMs();
         if (delay <= 0) delay = metadata.delayMs();
         return (currentTimeMillis - lastTickTime) >= delay;
     }
 
-    public void tick(long currentTimeMillis, @NotNull ChunkViewerTracker tracker, @NotNull RenderManager renderManager, @NotNull PacketSender sender) {
-        if (visiblePlayers.isEmpty()) return;
+    public void tick(long currentTimeMillis, @NotNull RenderManager renderManager) {
+        if (inRangePlayers.isEmpty()) return;
 
-        boolean missingCurrent = false;
-        for (FrameNode node : nodes) {
-            long cacheKey = ((long) currentFrameIndex << 32) | (node.getMapID() & 0xFFFFFFFFL);
-            MapFrameUpdate update = frameCache.getIfPresent(cacheKey);
-            if (update == null || update.isFreed()) {
-                if (currentFrameIndex == 0) {
-                    MapFrameUpdate base = baseFrames.get(node.getMapID());
-                    if (base != null && !base.isFreed()) {
-                        frameCache.put(cacheKey, base);
-                        continue;
-                    }
-                }
-                missingCurrent = true;
-                break;
+        if (animated) {
+            tickAnimated(renderManager);
+        } else {
+            currentFrameIndex = 0;
+            for (UUID uuid : inRangePlayers) {
+                sendStills(uuid, sentMapsOf(uuid), renderManager);
+            }
+        }
+        lastTickTime = currentTimeMillis;
+    }
+
+    private void tickAnimated(RenderManager renderManager) {
+        if (!isFrameReady(currentFrameIndex)) {
+            loadFrameAsync(currentFrameIndex);
+            return;
+        }
+
+        long burstBytes = 0;
+        if (currentFrameIndex == 0) {
+            for (FrameNode node : nodes) {
+                MapFrameUpdate frame = frameFor(0, node.getMapID());
+                if (frame != null) burstBytes += frame.totalBytes();
             }
         }
 
-        if (missingCurrent) {
-            if (!loadingFrames.contains(currentFrameIndex)) {
-                loadingFrames.add(currentFrameIndex);
-                final int cFrame = currentFrameIndex;
-                CompletableFuture.runAsync(() -> {
-                    try {
-                        Map<Integer, MapFrameUpdate> bundled = flatFileStorage.loadBundledFrame(metadata.syncGroupID(), cFrame);
-                        for (FrameNode node : nodes) {
-                            long key = ((long) cFrame << 32) | (node.getMapID() & 0xFFFFFFFFL);
-                            MapFrameUpdate update = bundled.get(node.getMapID());
-                            if (update != null && !update.isFreed()) {
-                                frameCache.put(key, update);
-                                if (cFrame == 0) {
-                                    baseFrames.put(node.getMapID(), update);
-                                    update.retain();
-                                }
-                            }
-                        }
-                    } catch (Exception ignored) {
-                    } finally {
-                        loadingFrames.remove(cFrame);
+        for (UUID uuid : inRangePlayers) {
+            Set<Integer> sentMaps = sentMapsOf(uuid);
+            if (!visiblePlayers.contains(uuid)) {
+                animSynced.remove(uuid);
+                sendAnimationStills(uuid, sentMaps, renderManager);
+                continue;
+            }
+            tickAnimatedViewer(uuid, sentMaps, renderManager, burstBytes);
+        }
+
+        currentFrameIndex++;
+        if (currentFrameIndex >= frameCount()) {
+            currentFrameIndex = 0;
+        }
+        for (int i = 0; i <= PREFETCH_FRAMES; i++) {
+            int ahead = (currentFrameIndex + i) % frameCount();
+            if (!isFrameReady(ahead)) {
+                loadFrameAsync(ahead);
+            }
+        }
+    }
+
+    private void tickAnimatedViewer(UUID uuid, Set<Integer> sentMaps, RenderManager renderManager, long burstBytes) {
+        boolean synced = animSynced.contains(uuid);
+
+        if (synced && renderManager.animationDrainSeconds(uuid, 0) > ANIMATION_MAX_DRAIN_SECONDS) {
+            animSynced.remove(uuid);
+            synced = false;
+        }
+
+        if (!synced) {
+            if (currentFrameIndex == 0 && renderManager.animationDrainSeconds(uuid, burstBytes) <= ANIMATION_START_DRAIN_SECONDS) {
+                boolean all = true;
+                for (FrameNode node : nodes) {
+                    int mapId = node.getMapID();
+                    MapFrameUpdate frame = frameFor(0, mapId);
+                    if (frame == null || !renderManager.enqueueUpdate(uuid, frame, PlayerSendQueue.TIER_ANIMATION)) {
+                        all = false;
+                        continue;
                     }
-                }, vtExecutor);
+                    sentMaps.add(mapId);
+                }
+                if (all) animSynced.add(uuid);
+            } else {
+                sendAnimationStills(uuid, sentMaps, renderManager);
             }
             return;
         }
 
         for (FrameNode node : nodes) {
-            long cacheKey = ((long) currentFrameIndex << 32) | (node.getMapID() & 0xFFFFFFFFL);
-            MapFrameUpdate update = frameCache.getIfPresent(cacheKey);
-            if (update == null || update.isFreed()) {
-                if (currentFrameIndex == 0) {
-                    update = baseFrames.get(node.getMapID());
-                }
+            int mapId = node.getMapID();
+            MapFrameUpdate frame = frameFor(currentFrameIndex, mapId);
+            if (frame == null) {
+                animSynced.remove(uuid);
+                return;
             }
+            if (frame.parts().length == 0) continue;
+            if (!renderManager.enqueueUpdate(uuid, frame, PlayerSendQueue.TIER_ANIMATION)) {
+                animSynced.remove(uuid);
+                return;
+            }
+            sentMaps.add(mapId);
+        }
+    }
 
-            if (update != null && !update.isFreed()) {
-                for (UUID uuid : visiblePlayers) {
-                    Set<Integer> sentMaps = initializedMapsPerUser.computeIfAbsent(uuid, k -> ConcurrentHashMap.newKeySet());
-                    boolean isNewForUser = !sentMaps.contains(node.getMapID());
+    private Set<Integer> sentMapsOf(UUID uuid) {
+        return initializedMapsPerUser.computeIfAbsent(uuid, k -> ConcurrentHashMap.newKeySet());
+    }
 
-                    if (isNewForUser && currentFrameIndex != 0) {
-                        MapFrameUpdate base = baseFrames.get(node.getMapID());
-                        if (base == null || base.isFreed()) {
-                            try {
-                                Map<Integer, MapFrameUpdate> reloaded = flatFileStorage.loadBundledFrame(metadata.syncGroupID(), 0);
-                                for (Map.Entry<Integer, MapFrameUpdate> entry : reloaded.entrySet()) {
-                                    MapFrameUpdate reloadedUpdate = entry.getValue();
-                                    baseFrames.put(entry.getKey(), reloadedUpdate);
-                                    reloadedUpdate.retain();
-                                }
-                                base = baseFrames.get(node.getMapID());
-                            } catch (Exception ignored) {}
-                        }
-                        if (base != null && !base.isFreed()) {
-                            for (DeltaFrame subChunk : base.parts()) {
-                                com.github.retrooper.packetevents.wrapper.PacketWrapper<?> pkt = sender.createMapPacket(subChunk);
-                                if (pkt != null) {
-                                    renderManager.enqueuePacket(uuid, pkt);
-                                }
-                            }
-                        }
-                    }
-
-                    if (isNewForUser || metadata.isAnimated()) {
-                        for (DeltaFrame subChunk : update.parts()) {
-                            com.github.retrooper.packetevents.wrapper.PacketWrapper<?> pkt = sender.createMapPacket(subChunk);
-                            if (pkt != null) {
-                                renderManager.enqueuePacket(uuid, pkt);
-                            }
-                        }
-                        sentMaps.add(node.getMapID());
-                    }
-                }
+    private void sendAnimationStills(UUID uuid, Set<Integer> sentMaps, RenderManager renderManager) {
+        List<FrameNode> missing = null;
+        for (FrameNode node : nodes) {
+            if (!sentMaps.contains(node.getMapID())) {
+                if (missing == null) missing = new ArrayList<>();
+                missing.add(node);
             }
         }
+        if (missing == null) return;
 
-        lastTickTime = currentTimeMillis;
-
-        if (metadata.isAnimated()) {
-            currentFrameIndex++;
-            if (currentFrameIndex >= metadata.totalFrames()) {
-                currentFrameIndex = 0;
-            }
-
-            int nextFrame = currentFrameIndex;
-            boolean missingNext = false;
-            for (FrameNode node : nodes) {
-                if (frameCache.getIfPresent(((long) nextFrame << 32) | (node.getMapID() & 0xFFFFFFFFL)) == null) {
-                    missingNext = true; break;
-                }
-            }
-
-            if (missingNext && !loadingFrames.contains(nextFrame)) {
-                loadingFrames.add(nextFrame);
-                final int nxtFrame = nextFrame;
-                CompletableFuture.runAsync(() -> {
-                    try {
-                        Map<Integer, MapFrameUpdate> bundled = flatFileStorage.loadBundledFrame(metadata.syncGroupID(), nxtFrame);
-                        for (FrameNode node : nodes) {
-                            long key = ((long) nxtFrame << 32) | (node.getMapID() & 0xFFFFFFFFL);
-                            MapFrameUpdate update = bundled.get(node.getMapID());
-                            frameCache.put(key, update != null ? update : new MapFrameUpdate(new DeltaFrame[0]));
-                        }
-                    } catch (Exception ignored) {
-                    } finally {
-                        loadingFrames.remove(nxtFrame);
-                    }
-                }, vtExecutor);
-            }
-        } else {
-            currentFrameIndex = 0;
+        double[] view = playerViews.get(uuid);
+        if (view != null && missing.size() > 1) {
+            missing.sort(Comparator.comparingDouble(n -> score(view, n)));
         }
+
+        boolean notLoaded = false;
+        for (FrameNode node : missing) {
+            int mapId = node.getMapID();
+            MapFrameUpdate frame = frameFor(0, mapId);
+            if (frame == null) {
+                notLoaded = true;
+                continue;
+            }
+            if (renderManager.enqueueUpdate(uuid, frame, PlayerSendQueue.TIER_ANIMATION)) {
+                sentMaps.add(mapId);
+            }
+        }
+        if (notLoaded) {
+            loadFrameAsync(0);
+        }
+    }
+
+    private record Candidate(double score, FrameNode node) {}
+
+    private void sendStills(UUID uuid, Set<Integer> sentMaps, RenderManager renderManager) {
+        long budget = renderManager.stillBudget(uuid, 1);
+        if (budget <= 0) return;
+
+        int limit = (int) Math.max(1, Math.min(512, budget / PlayerSendQueue.MAP_PACKET_BYTES + 1));
+        double[] view = playerViews.get(uuid);
+        PriorityQueue<Candidate> best = new PriorityQueue<>(limit + 1, (x, y) -> Double.compare(y.score(), x.score()));
+        for (FrameNode node : nodes) {
+            if (sentMaps.contains(node.getMapID())) continue;
+            double score = score(view, node);
+            if (best.size() < limit) {
+                best.add(new Candidate(score, node));
+            } else if (score < best.peek().score()) {
+                best.poll();
+                best.add(new Candidate(score, node));
+            }
+        }
+        if (best.isEmpty()) return;
+
+        List<Candidate> ordered = new ArrayList<>(best);
+        ordered.sort(Comparator.comparingDouble(Candidate::score));
+
+        boolean notLoaded = false;
+        for (Candidate candidate : ordered) {
+            int tier = tierFor(candidate.score());
+            if (renderManager.stillBudget(uuid, tier) <= 0) break;
+            int mapId = candidate.node().getMapID();
+            MapFrameUpdate frame = frameFor(0, mapId);
+            if (frame == null) {
+                notLoaded = true;
+                continue;
+            }
+            if (renderManager.enqueueUpdate(uuid, frame, tier)) {
+                sentMaps.add(mapId);
+            }
+        }
+        if (notLoaded) {
+            loadFrameAsync(0);
+        }
+    }
+
+    private static double score(@Nullable double[] view, FrameNode node) {
+        if (view == null) return 40.0;
+        double tx = node.getBlockX() + 0.5 - view[0];
+        double ty = node.getBlockY() + 0.5 - view[1];
+        double tz = node.getBlockZ() + 0.5 - view[2];
+        double distance = Math.sqrt(tx * tx + ty * ty + tz * tz);
+        if (distance < 1.0e-6) return 0.0;
+        double facing = (tx * view[3] + ty * view[4] + tz * view[5]) / distance;
+        double factor = facing > 0.35 ? 1.0 : (facing > -0.1 ? 1.8 : 3.5);
+        return distance * factor;
+    }
+
+    private static int tierFor(double score) {
+        if (score < 24.0) return 1;
+        if (score < 56.0) return 2;
+        return 3;
     }
 
     public List<FrameNode> getNodes() {
@@ -428,8 +638,7 @@ public class SyncGroup {
 
         for (FrameNode node : nodes) {
             for (int i = 0; i < metadata.totalFrames(); i++) {
-                long key = ((long) i << 32) | (node.getMapID() & 0xFFFFFFFFL);
-                frameCache.invalidate(key);
+                frameCache.invalidate(cacheKey(i, node.getMapID()));
             }
         }
     }

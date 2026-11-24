@@ -17,6 +17,11 @@ public class StaticImageProvider implements ImageFrameProvider {
     @Override public int getFrameHeight(int index) { return image.getHeight(); }
 
     @Override
+    public BufferedImage getFrameImage(int index) {
+        return image;
+    }
+
+    @Override
     public int[] getFramePixels(int index) {
         if (pixels == null) {
             pixels = new int[image.getWidth() * image.getHeight()];

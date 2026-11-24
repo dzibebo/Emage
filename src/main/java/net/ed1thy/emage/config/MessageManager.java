@@ -48,6 +48,7 @@ public class MessageManager {
     private String infoSizeRaw;
     private String infoAnimatedRaw;
     private String infoUrlRaw;
+    private String infoUnknownDate;
 
     private String undoName;
     private String undoHover;
@@ -92,12 +93,13 @@ public class MessageManager {
         this.undoMismatch = prefix.append(miniMessage.deserialize(config.getString("messages.undo-mismatch", "<red>Вы смотрите на другое изображение, не на то, для которого была кнопка отмены.")));
         this.noPermission = prefix.append(miniMessage.deserialize(config.getString("messages.no-permission", "<red>У вас нет прав для удаления этого изображения.")));
 
-        this.infoHeader = miniMessage.deserialize(config.getString("messages.info-header", "<gradient:#F57E3A:#CB6E38:#C36220>Информация об изображении:</gradient>"));
-        this.infoAuthorRaw = config.getString("messages.info-author", "<gray>Автор: <color:#f3c6bb><author></color>");
-        this.infoDateRaw = config.getString("messages.info-date", "<gray>Дата создания: <color:#f3c6bb><date></color>");
-        this.infoSizeRaw = config.getString("messages.info-size", "<gray>Размер сетки: <color:#f3c6bb><width>x<height></color> (<total> рамок)");
-        this.infoAnimatedRaw = config.getString("messages.info-animated", "<gray>Анимация: <color:#f3c6bb><frames></color> кадров (<delay> мс)");
-        this.infoUrlRaw = config.getString("messages.info-url", "<gray>Источник: <click:open_url:'<url>'><hover:show_text:'Нажмите, чтобы открыть ссылку'><color:#4CABBB><u>[Открыть ссылку]</u></color></hover></click>");
+        this.infoHeader = miniMessage.deserialize(config.getString("messages.info-header", "<#D4EECC>иʜфᴏᴘᴍᴀция ᴏб изᴏбᴘᴀжᴇʜии:</#D4EECC>"));
+        this.infoAuthorRaw = config.getString("messages.info-author", "<white>ᴀʙᴛᴏᴘ: <#D4EECC><author></#D4EECC></white>");
+        this.infoDateRaw = config.getString("messages.info-date", "<white>дᴀᴛᴀ ᴄᴏздᴀʜия: <#D4EECC><date></#D4EECC></white>");
+        this.infoSizeRaw = config.getString("messages.info-size", "<white>ᴘᴀзᴍᴇᴘ ᴄᴇᴛᴋи: <#D4EECC><width>x<height></#D4EECC> (<#D4EECC><total></#D4EECC> ᴘᴀᴍᴏᴋ)</white>");
+        this.infoAnimatedRaw = config.getString("messages.info-animated", "<white>ᴀʜиᴍᴀция: <#D4EECC><frames></#D4EECC> ᴋᴀдᴘᴏʙ (<#D4EECC><delay></#D4EECC> ᴍᴄ)</white>");
+        this.infoUrlRaw = config.getString("messages.info-url", "<white>иᴄᴛᴏчʜиᴋ: <click:open_url:'<url>'><hover:show_text:'ʜᴀжᴍиᴛᴇ, чᴛᴏбы ᴏᴛᴋᴘыᴛь ᴄᴄылᴋу'><#D4EECC><u>[ᴏᴛᴋᴘыᴛь ᴄᴄылᴋу]</u></#D4EECC></hover></click></white>");
+        this.infoUnknownDate = config.getString("messages.info-unknown-date", "ʜᴇизʙᴇᴄᴛʜᴏ");
 
         this.processingStartedRaw = config.getString("messages.processing-started", "<color:#fd6039>Обработка изображения для сетки <color:#f3c6bb><width>x<height></color>. Пожалуйста, подождите...");
         this.downloadingRaw = config.getString("messages.downloading", "<color:#4CABBB>Загрузка...</color>");
@@ -175,6 +177,9 @@ public class MessageManager {
     public void sendCleanupFailed(@NotNull Audience audience) { audience.sendMessage(this.cleanupFailed); playSafely(audience, errorSound); }
     public void sendUndoMismatch(@NotNull Audience audience) { audience.sendMessage(this.undoMismatch); playSafely(audience, errorSound); }
     public void sendNoPermission(@NotNull Audience audience) { audience.sendMessage(this.noPermission); playSafely(audience, errorSound); }
+
+    @NotNull
+    public String getInfoUnknownDate() { return infoUnknownDate; }
 
     public void sendInfo(@NotNull Audience audience, @NotNull String author, @NotNull String date,
                          int width, int height, int total, boolean isAnimated, int frames, int delayMs,

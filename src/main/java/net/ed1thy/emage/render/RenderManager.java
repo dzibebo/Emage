@@ -4,8 +4,6 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.retrooper.packetevents.protocol.player.User;
-import com.github.retrooper.packetevents.wrapper.PacketWrapper;
-import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import net.ed1thy.emage.Emage;
 import net.ed1thy.emage.config.ConfigManager;
@@ -15,18 +13,20 @@ import net.ed1thy.emage.model.MapFrameUpdate;
 import org.bukkit.Bukkit;
 import org.bukkit.scheduler.BukkitTask;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
-import java.util.Iterator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class RenderManager {
 
@@ -36,19 +36,28 @@ public class RenderManager {
 
     private final int maxPacketsPerTick;
     private final double viewDistance;
+    private final double animatedViewDistance;
 
-    private static final int MAX_PACKETS_PER_PLAYER_PER_TICK = 250;
-    private static final int MAX_BYTES_PER_PLAYER_PER_TICK = 1_000_000;
+    private final PlayerSendQueue.Tuning tuning;
+    private final double initialRate;
+    private final SendBudget totalBudget;
+    private int rotation;
+
+    private final ReentrantLock renderLock = new ReentrantLock();
 
     private final Map<Integer, SyncGroup> activeGroups = new ConcurrentHashMap<>();
     private final Queue<SpoofTask> pendingSpoofs = new ConcurrentLinkedQueue<>();
-    private final Map<User, Queue<PacketWrapper<?>>> userPacketQueues = new ConcurrentHashMap<>();
+    private final Queue<PurgeRequest> pendingPurges = new ConcurrentLinkedQueue<>();
+    private final Map<User, PlayerSendQueue> userPacketQueues = new ConcurrentHashMap<>();
 
     private final Cache<Long, MapFrameUpdate> globalFrameCache;
     private final ScheduledExecutorService executorService;
+    private ScheduledFuture<?> tickTask;
     private BukkitTask visibilityTask;
 
     public record SpoofTask(@NotNull User user, @NotNull FrameNode node) {}
+
+    private record PurgeRequest(@NotNull UUID uuid, @NotNull Set<Integer> mapIds, @NotNull SyncGroup group) {}
 
     public RenderManager(@NotNull Emage plugin, @NotNull ChunkViewerTracker chunkViewerTracker, @NotNull PacketSender packetSender, @NotNull ConfigManager configManager, @NotNull ScheduledExecutorService scheduledExecutor) {
         this.plugin = plugin;
@@ -56,6 +65,15 @@ public class RenderManager {
         this.packetSender = packetSender;
         this.maxPacketsPerTick = configManager.maxPacketsPerTick;
         this.viewDistance = configManager.viewDistanceBlocks > 0 ? (double) configManager.viewDistanceBlocks : 96.0;
+        this.animatedViewDistance = configManager.animatedViewDistanceBlocks;
+        this.tuning = new PlayerSendQueue.Tuning(
+                configManager.minBytesPerSecondPerPlayer,
+                configManager.maxBytesPerSecondPerPlayer,
+                configManager.maxPendingBytesPerPlayer,
+                configManager.targetQueueDelayMs,
+                configManager.latencyProbe);
+        this.initialRate = PlayerSendQueue.initialRate(tuning);
+        this.totalBudget = new SendBudget(configManager.maxTotalBytesPerSecond);
         this.executorService = scheduledExecutor;
 
         long maxBytes = (long) configManager.cacheMaxMemoryMb * 1024L * 1024L;
@@ -83,8 +101,12 @@ public class RenderManager {
         return viewDistance;
     }
 
+    public double getAnimatedViewDistance() {
+        return animatedViewDistance;
+    }
+
     public void start() {
-        executorService.scheduleWithFixedDelay(this::tickAll, 20, 20, TimeUnit.MILLISECONDS);
+        tickTask = executorService.scheduleWithFixedDelay(this::tickAll, 20, 20, TimeUnit.MILLISECONDS);
 
         visibilityTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             for (SyncGroup group : activeGroups.values()) {
@@ -94,136 +116,179 @@ public class RenderManager {
     }
 
     private void tickAll() {
+        renderLock.lock();
         try {
             long currentTime = System.currentTimeMillis();
 
-            int spoofSent = 0;
-            SpoofTask spoofTask;
-            while (spoofSent < Math.max(200, maxPacketsPerTick * 5) && (spoofTask = pendingSpoofs.poll()) != null) {
-                packetSender.spoofItemFrameMap(spoofTask.user(), spoofTask.node());
-                spoofSent++;
-            }
+            processPurges();
+            processSpoofs();
 
-            if (!activeGroups.isEmpty()) {
-                for (SyncGroup group : activeGroups.values()) {
+            for (SyncGroup group : activeGroups.values()) {
+                try {
                     if (group.shouldTick(currentTime)) {
-                        group.tick(currentTime, chunkViewerTracker, this, packetSender);
+                        group.tick(currentTime, this);
                     }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("Failed to tick a picture group: " + e);
                 }
             }
 
-            Iterator<Map.Entry<User, Queue<PacketWrapper<?>>>> iterator = userPacketQueues.entrySet().iterator();
-            while (iterator.hasNext()) {
-                Map.Entry<User, Queue<PacketWrapper<?>>> entry = iterator.next();
-                User user = entry.getKey();
-                Queue<PacketWrapper<?>> queue = entry.getValue();
+            long now = System.nanoTime();
+            totalBudget.refill(now);
 
-                Object rawChannel = user.getChannel();
-                if (!(rawChannel instanceof Channel channel) || !channel.isActive()) {
-                    PacketWrapper<?> dropped;
-                    while ((dropped = queue.poll()) != null) {
-                        if (dropped instanceof ZeroCopyMapWrapper mapPacket) {
-                            mapPacket.getDelta().freeMemory();
-                        }
-                    }
-                    iterator.remove();
+            List<Map.Entry<User, PlayerSendQueue>> entries = new ArrayList<>(userPacketQueues.entrySet());
+            int count = entries.size();
+            int start = count == 0 ? 0 : Math.floorMod(rotation++, count);
+            for (int i = 0; i < count; i++) {
+                Map.Entry<User, PlayerSendQueue> entry = entries.get((start + i) % count);
+                User user = entry.getKey();
+                PlayerSendQueue queue = entry.getValue();
+
+                if (queue.isClosed()) {
+                    queue.drain();
+                    userPacketQueues.remove(user, queue);
                     continue;
                 }
 
-                if (queue.size() > 2500) {
-                    int toDrop = queue.size() - 1000;
-                    for (int i = 0; i < toDrop; i++) {
-                        PacketWrapper<?> peeked = queue.peek();
-                        if (peeked instanceof ZeroCopyMapWrapper mapPacket && mapPacket.getDelta().frameIndex() == 0) {
-                            break;
-                        }
-                        PacketWrapper<?> dropped = queue.poll();
-                        if (dropped instanceof ZeroCopyMapWrapper mapPacket) {
-                            mapPacket.getDelta().freeMemory();
-                        }
-                    }
+                Object rawChannel = user.getChannel();
+                if (!(rawChannel instanceof Channel channel) || !channel.isActive()) {
+                    queue.drain();
+                    userPacketQueues.remove(user, queue);
+                    continue;
                 }
 
-                int sent = 0;
-                int sentBytes = 0;
-                PacketWrapper<?> packet;
-
-                while (sent < MAX_PACKETS_PER_PLAYER_PER_TICK && sentBytes < MAX_BYTES_PER_PLAYER_PER_TICK) {
-                    packet = queue.peek();
-                    if (packet == null) break;
-
-                    int pktSize = 8192;
-                    if (packet instanceof ZeroCopyMapWrapper mapPacket) {
-                        ByteBuf buf = mapPacket.getDelta().packetBuf();
-                        if (buf == null || buf.refCnt() <= 0 || buf.readableBytes() <= 0) {
-                            queue.poll();
-                            if (buf != null && buf.refCnt() > 0) {
-                                mapPacket.getDelta().freeMemory();
-                            }
-                            continue;
-                        }
-                        pktSize = buf.readableBytes() + 16;
-                    }
-
-                    if (sentBytes + pktSize > MAX_BYTES_PER_PLAYER_PER_TICK && sentBytes > 0) {
-                        break;
-                    }
-
-                    queue.poll();
-                    try {
-                        user.sendPacket(packet);
-                    } catch (Exception e) {
-                        if (packet instanceof ZeroCopyMapWrapper mapPacket) {
-                            mapPacket.getDelta().freeMemory();
-                        }
-                    }
-                    sent++;
-                    sentBytes += pktSize;
+                try {
+                    queue.flush(user, channel, packetSender, totalBudget, now);
+                } catch (Exception e) {
+                    plugin.getLogger().warning("Failed to flush map packets for " + user.getUUID() + ": " + e);
                 }
             }
         } catch (Exception e) {
-            plugin.getLogger().severe("Render Thread Error: " + e.getMessage());
+            plugin.getLogger().severe("Render Thread Error: " + e);
             e.printStackTrace();
+        } finally {
+            renderLock.unlock();
         }
     }
 
-    public void enqueuePacket(@NotNull UUID uuid, @Nullable PacketWrapper<?> packet) {
-        if (packet == null) return;
-        User user = chunkViewerTracker.getUser(uuid);
-        if (user == null) {
-            if (packet instanceof ZeroCopyMapWrapper mapPacket) {
-                mapPacket.getDelta().freeMemory();
+    private void processSpoofs() {
+        int budget = Math.max(200, maxPacketsPerTick * 5);
+        int candidates = Math.min(pendingSpoofs.size(), budget);
+        if (candidates == 0) return;
+
+        Set<User> touched = new HashSet<>();
+        for (int i = 0; i < candidates; i++) {
+            SpoofTask task = pendingSpoofs.poll();
+            if (task == null) break;
+
+            Object rawChannel = task.user().getChannel();
+            if (!(rawChannel instanceof Channel channel) || !channel.isActive()) {
+                continue;
             }
-            return;
+            if (!channel.isWritable()) {
+                pendingSpoofs.add(task);
+                continue;
+            }
+            try {
+                packetSender.writeSpoofItemFrameMap(task.user(), task.node());
+                touched.add(task.user());
+            } catch (Exception ignored) {
+            }
         }
-        userPacketQueues.computeIfAbsent(user, k -> new ConcurrentLinkedQueue<>()).add(packet);
+        for (User user : touched) {
+            try {
+                user.flushPackets();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void processPurges() {
+        PurgeRequest request;
+        int budget = 256;
+        while (budget-- > 0 && (request = pendingPurges.poll()) != null) {
+            User user = chunkViewerTracker.getUser(request.uuid());
+            if (user == null) continue;
+            PlayerSendQueue queue = userPacketQueues.get(user);
+            if (queue == null || queue.isEmpty()) continue;
+            Set<Integer> dropped = queue.purge(request.mapIds());
+            if (!dropped.isEmpty()) {
+                request.group().forgetMaps(request.uuid(), dropped);
+            }
+        }
+    }
+
+    public boolean enqueueMap(@NotNull UUID uuid, @NotNull DeltaFrame part, int tier) {
+        User user = chunkViewerTracker.getUser(uuid);
+        if (user == null) return false;
+        return userPacketQueues.computeIfAbsent(user, k -> new PlayerSendQueue(tuning)).add(part, tier);
+    }
+
+    public boolean enqueueUpdate(@NotNull UUID uuid, @NotNull MapFrameUpdate update, int tier) {
+        boolean all = true;
+        for (DeltaFrame part : update.parts()) {
+            if (!enqueueMap(uuid, part, tier)) all = false;
+        }
+        return all;
+    }
+
+    public double animationDrainSeconds(@NotNull UUID uuid, long extraBytes) {
+        User user = chunkViewerTracker.getUser(uuid);
+        PlayerSendQueue queue = user == null ? null : userPacketQueues.get(user);
+        if (queue == null || queue.isClosed()) {
+            return Math.max(0L, extraBytes) / initialRate;
+        }
+        return queue.urgentDrainSeconds(extraBytes);
+    }
+
+    public long stillBudget(@NotNull UUID uuid, int tier) {
+        User user = chunkViewerTracker.getUser(uuid);
+        if (user == null) return 0;
+        PlayerSendQueue queue = userPacketQueues.get(user);
+        if (queue == null) return (long) PlayerSendQueue.lookaheadFor(initialRate);
+        if (queue.isClosed()) return 0;
+        return (long) (queue.lookaheadBytes() - queue.stillBytesUpToTier(tier));
+    }
+
+    public List<String> debugLines() {
+        List<String> lines = new ArrayList<>();
+        lines.add("Emage: " + activeGroups.size() + " picture group(s), frame cache "
+                + globalFrameCache.estimatedSize() + " entries, total send limit "
+                + (long) (totalBudget.rate() / 1024) + " KB/s, " + userPacketQueues.size() + " active sender(s)");
+        for (Map.Entry<User, PlayerSendQueue> entry : userPacketQueues.entrySet()) {
+            String name = entry.getKey().getProfile() != null ? entry.getKey().getProfile().getName() : String.valueOf(entry.getKey().getUUID());
+            lines.add(name + ": " + entry.getValue().describe());
+        }
+        return lines;
+    }
+
+    public boolean hasPendingPackets(@NotNull UUID uuid) {
+        User user = chunkViewerTracker.getUser(uuid);
+        if (user == null) return false;
+        PlayerSendQueue queue = userPacketQueues.get(user);
+        return queue != null && !queue.isEmpty();
+    }
+
+    public void requestPurge(@NotNull UUID uuid, @NotNull Set<Integer> mapIds, @NotNull SyncGroup group) {
+        pendingPurges.add(new PurgeRequest(uuid, mapIds, group));
+    }
+
+    public boolean onPong(@NotNull User user, int id) {
+        if (!PlayerSendQueue.isProbeId(id)) return false;
+        PlayerSendQueue queue = userPacketQueues.get(user);
+        if (queue != null) queue.onPong(id);
+        return true;
     }
 
     public void clearQueue(@NotNull UUID uuid) {
         User user = chunkViewerTracker.getUser(uuid);
         if (user != null) {
-            Queue<PacketWrapper<?>> queue = userPacketQueues.remove(user);
-            if (queue != null) {
-                PacketWrapper<?> dropped;
-                while ((dropped = queue.poll()) != null) {
-                    if (dropped instanceof ZeroCopyMapWrapper mapPacket) {
-                        mapPacket.getDelta().freeMemory();
-                    }
-                }
-            }
+            PlayerSendQueue queue = userPacketQueues.get(user);
+            if (queue != null) queue.close();
         }
-        Iterator<Map.Entry<User, Queue<PacketWrapper<?>>>> iterator = userPacketQueues.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Map.Entry<User, Queue<PacketWrapper<?>>> entry = iterator.next();
+        for (Map.Entry<User, PlayerSendQueue> entry : userPacketQueues.entrySet()) {
             if (entry.getKey().getUUID().equals(uuid)) {
-                Queue<PacketWrapper<?>> queue = entry.getValue();
-                PacketWrapper<?> dropped;
-                while ((dropped = queue.poll()) != null) {
-                    if (dropped instanceof ZeroCopyMapWrapper mapPacket) {
-                        mapPacket.getDelta().freeMemory();
-                    }
-                }
-                iterator.remove();
+                entry.getValue().close();
             }
         }
     }
@@ -242,22 +307,23 @@ public class RenderManager {
     }
 
     public void reset() {
-        for (SyncGroup group : activeGroups.values()) {
-            group.cleanup();
-        }
-        activeGroups.clear();
-        pendingSpoofs.clear();
-
-        for (Queue<PacketWrapper<?>> queue : userPacketQueues.values()) {
-            PacketWrapper<?> packet;
-            while ((packet = queue.poll()) != null) {
-                if (packet instanceof ZeroCopyMapWrapper mapPacket) {
-                    mapPacket.getDelta().freeMemory();
-                }
+        renderLock.lock();
+        try {
+            for (SyncGroup group : activeGroups.values()) {
+                group.cleanup();
             }
+            activeGroups.clear();
+            pendingSpoofs.clear();
+            pendingPurges.clear();
+
+            for (PlayerSendQueue queue : userPacketQueues.values()) {
+                queue.drain();
+            }
+            userPacketQueues.clear();
+            globalFrameCache.invalidateAll();
+        } finally {
+            renderLock.unlock();
         }
-        userPacketQueues.clear();
-        globalFrameCache.invalidateAll();
     }
 
     public void queueSpoof(@NotNull User user, @NotNull FrameNode node) {
@@ -268,43 +334,12 @@ public class RenderManager {
         UUID uuid = user.getUUID();
         int mapId = node.getMapID();
 
-        List<SyncGroup> owners = null;
         for (SyncGroup group : activeGroups.values()) {
             if (!group.ownsMap(mapId)) continue;
             if (group.isNodeInitialized(uuid, mapId)) return;
-            if (owners == null) owners = new ArrayList<>(2);
-            owners.add(group);
         }
 
         queueSpoof(user, node);
-
-        MapFrameUpdate update = globalFrameCache.getIfPresent((long) mapId & 0xFFFFFFFFL);
-        if (update != null && !update.isFreed()) {
-            enqueueParts(uuid, update);
-            if (owners != null) {
-                for (SyncGroup group : owners) group.markNodeInitialized(uuid, mapId);
-            }
-            return;
-        }
-
-        if (owners == null) return;
-        for (SyncGroup group : owners) {
-            MapFrameUpdate base = group.getBaseFrame(mapId);
-            if (base != null && !base.isFreed()) {
-                enqueueParts(uuid, base);
-                group.markNodeInitialized(uuid, mapId);
-                return;
-            }
-        }
-    }
-
-    private void enqueueParts(UUID uuid, MapFrameUpdate update) {
-        for (DeltaFrame subChunk : update.parts()) {
-            PacketWrapper<?> pkt = packetSender.createMapPacket(subChunk);
-            if (pkt != null) {
-                enqueuePacket(uuid, pkt);
-            }
-        }
     }
 
     public void resetUserState(@NotNull UUID uuid) {
@@ -320,6 +355,7 @@ public class RenderManager {
     }
 
     public void registerSyncGroup(int syncGroupID, @NotNull SyncGroup group) {
+        group.attach(this);
         group.updateVisibility();
         activeGroups.put(syncGroupID, group);
     }
@@ -337,22 +373,24 @@ public class RenderManager {
 
     public void shutdown() {
         if (visibilityTask != null) visibilityTask.cancel();
+        if (tickTask != null) tickTask.cancel(false);
 
-        for (SyncGroup group : activeGroups.values()) {
-            group.cleanup();
-        }
-
-        activeGroups.clear();
-        pendingSpoofs.clear();
-
-        for (Queue<PacketWrapper<?>> queue : userPacketQueues.values()) {
-            PacketWrapper<?> packet;
-            while ((packet = queue.poll()) != null) {
-                if (packet instanceof ZeroCopyMapWrapper mapPacket) {
-                    mapPacket.getDelta().freeMemory();
-                }
+        renderLock.lock();
+        try {
+            for (SyncGroup group : activeGroups.values()) {
+                group.cleanup();
             }
+
+            activeGroups.clear();
+            pendingSpoofs.clear();
+            pendingPurges.clear();
+
+            for (PlayerSendQueue queue : userPacketQueues.values()) {
+                queue.drain();
+            }
+            userPacketQueues.clear();
+        } finally {
+            renderLock.unlock();
         }
-        userPacketQueues.clear();
     }
 }

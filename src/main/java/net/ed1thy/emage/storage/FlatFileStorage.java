@@ -84,24 +84,33 @@ public class FlatFileStorage {
         byte[] uncompressed = new byte[(int) decompressedSize];
         com.github.luben.zstd.Zstd.decompress(uncompressed, compressed);
 
-        DataInputStream dis = new DataInputStream(new ByteArrayInputStream(uncompressed));
-        int numUpdates = dis.readInt();
+        java.nio.ByteBuffer in = java.nio.ByteBuffer.wrap(uncompressed);
+        int numUpdates = in.getInt();
         Map<Integer, MapFrameUpdate> resultMap = new java.util.HashMap<>();
 
-        for (int i = 0; i < numUpdates; i++) {
-            int mapId = dis.readInt();
-            int numParts = dis.readInt();
-            DeltaFrame[] parts = new DeltaFrame[numParts];
-            for (int p = 0; p < numParts; p++) {
-                int len = dis.readInt();
-                byte[] bytes = new byte[len];
-                dis.readFully(bytes);
-
-                ByteBuf buf = PooledByteBufAllocator.DEFAULT.directBuffer(len);
-                buf.writeBytes(bytes);
-                parts[p] = new DeltaFrame(frameIndex, mapId, buf);
+        try {
+            for (int i = 0; i < numUpdates; i++) {
+                int mapId = in.getInt();
+                int numParts = in.getInt();
+                DeltaFrame[] parts = new DeltaFrame[numParts];
+                for (int p = 0; p < numParts; p++) {
+                    int len = in.getInt();
+                    if (len < 0 || len > in.remaining()) {
+                        for (int q = 0; q < p; q++) parts[q].freeMemory();
+                        throw new IllegalStateException("bad part length " + len);
+                    }
+                    ByteBuf buf = PooledByteBufAllocator.DEFAULT.directBuffer(len);
+                    buf.writeBytes(uncompressed, in.position(), len);
+                    in.position(in.position() + len);
+                    parts[p] = new DeltaFrame(frameIndex, mapId, buf);
+                }
+                resultMap.put(mapId, new MapFrameUpdate(parts));
             }
-            resultMap.put(mapId, new MapFrameUpdate(parts));
+        } catch (RuntimeException e) {
+            for (MapFrameUpdate update : resultMap.values()) {
+                update.freeMemory();
+            }
+            throw new IOException("Corrupt frame data: " + frameFile.getName(), e);
         }
         return resultMap;
     }
@@ -129,6 +138,10 @@ public class FlatFileStorage {
         } catch (IOException e) {
             return null;
         }
+    }
+
+    public boolean hasFrameData(int syncGroupId, int frameIndex) {
+        return new File(dataFolder, syncGroupId + File.separator + "frame_" + frameIndex + ".zst").exists();
     }
 
     public boolean groupExists(int syncGroupId) {

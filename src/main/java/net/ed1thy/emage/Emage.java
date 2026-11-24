@@ -5,6 +5,7 @@ import net.ed1thy.emage.config.ConfigManager;
 import net.ed1thy.emage.config.MessageManager;
 import net.ed1thy.emage.listener.ChunkTrackerListener;
 import net.ed1thy.emage.listener.FrameInteractListener;
+import net.ed1thy.emage.listener.LatencyProbeListener;
 import net.ed1thy.emage.listener.PersistenceListener;
 import net.ed1thy.emage.network.ImageDownloader;
 import net.ed1thy.emage.network.DnsResolver;
@@ -35,6 +36,7 @@ public class Emage extends JavaPlugin {
     private ColorPalette colorLUT;
     private ImagePipeline imagePipeline;
     private CommandRegistry commandRegistry;
+    private LatencyProbeListener probeListener;
 
     private ExecutorService virtualThreadExecutor;
     private ExecutorService boundedIoExecutor;
@@ -112,6 +114,11 @@ public class Emage extends JavaPlugin {
 
         renderManager.start();
 
+        if (configManager.latencyProbe) {
+            this.probeListener = new LatencyProbeListener(renderManager);
+            com.github.retrooper.packetevents.PacketEvents.getAPI().getEventManager().registerListener(probeListener);
+        }
+
         for (org.bukkit.entity.Player player : Bukkit.getOnlinePlayers()) {
             viewerTracker.registerPlayer(player);
         }
@@ -158,10 +165,6 @@ public class Emage extends JavaPlugin {
         }
     }
 
-    /**
-     * Eagerly loads every class from the plugin jar so that replacing the jar file
-     * while the server is running cannot cause NoClassDefFoundError later on.
-     */
     private void preloadClasses() {
         try {
             java.net.URL loc = getClass().getProtectionDomain().getCodeSource().getLocation();
@@ -193,6 +196,14 @@ public class Emage extends JavaPlugin {
         if (commandRegistry != null) commandRegistry.shutdown();
         if (imagePipeline != null) imagePipeline.shutdown();
         if (colorLUT != null) colorLUT.shutdown();
+
+        if (probeListener != null) {
+            try {
+                com.github.retrooper.packetevents.PacketEvents.getAPI().getEventManager().unregisterListener(probeListener);
+            } catch (Throwable ignored) {
+            }
+            probeListener = null;
+        }
 
         if (renderManager != null) {
             renderManager.shutdown();

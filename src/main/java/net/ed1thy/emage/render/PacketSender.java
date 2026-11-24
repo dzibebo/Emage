@@ -6,7 +6,7 @@ import com.github.retrooper.packetevents.protocol.player.User;
 import com.github.retrooper.packetevents.wrapper.PacketWrapper;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityEquipment;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.util.IllegalReferenceCountException;
 import net.ed1thy.emage.model.DeltaFrame;
 import net.ed1thy.emage.model.FrameNode;
 import org.jetbrains.annotations.NotNull;
@@ -22,17 +22,26 @@ public class PacketSender {
         if (src == null || src.refCnt() <= 0 || src.readableBytes() <= 0) {
             return null;
         }
-        ByteBuf copy = PooledByteBufAllocator.DEFAULT.directBuffer(src.readableBytes());
-        copy.writeBytes(src, src.readerIndex(), src.readableBytes());
-        return new ZeroCopyMapWrapper(new DeltaFrame(delta.frameIndex(), delta.mapId(), copy));
+        ByteBuf view;
+        try {
+            view = src.retainedDuplicate();
+        } catch (IllegalReferenceCountException e) {
+            return null;
+        }
+        return new ZeroCopyMapWrapper(new DeltaFrame(delta.frameIndex(), delta.mapId(), view));
     }
 
-    public void spoofItemFrameMap(@NotNull User user, @NotNull FrameNode node) {
+    public void writeSpoofItemFrameMap(@NotNull User user, @NotNull FrameNode node) {
         Equipment equipment = new Equipment(EquipmentSlot.MAIN_HAND, node.getCachedItem());
         WrapperPlayServerEntityEquipment equipmentPacket = new WrapperPlayServerEntityEquipment(
                 node.getEntityID(),
                 Collections.singletonList(equipment)
         );
-        user.sendPacket(equipmentPacket);
+        user.writePacket(equipmentPacket);
+    }
+
+    public void spoofItemFrameMap(@NotNull User user, @NotNull FrameNode node) {
+        writeSpoofItemFrameMap(user, node);
+        user.flushPackets();
     }
 }

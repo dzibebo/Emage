@@ -31,7 +31,7 @@ public class GridUtil {
         if (facing == org.bukkit.block.BlockFace.UP || facing == org.bukkit.block.BlockFace.DOWN) {
             float yaw = frame.getLocation().getYaw();
             yaw = (yaw % 360 + 360) % 360;
-            
+
             if (facing == org.bukkit.block.BlockFace.DOWN) {
                 if (yaw >= 315 || yaw < 45) {
                     return new GridVectors(1, 0, 0, 0, 0, -1);
@@ -54,7 +54,7 @@ public class GridUtil {
                 }
             }
         }
-        
+
         return switch (facing) {
             case NORTH -> new GridVectors(-1, 0, 0, 0, -1, 0);
             case SOUTH -> new GridVectors(1, 0, 0, 0, -1, 0);

@@ -1,6 +1,24 @@
 performance:
   max-packets-per-tick: 64
   view-distance-blocks: 96
+  # Animated pictures (GIFs) use much more traffic, so they are only streamed to players this close (0 = same as above).
+  animated-view-distance-blocks: 64
+  # Map data is sent to each player through an adaptive limiter so slow connections are not flooded
+  # (a flooded connection makes ping explode and can time the player out).
+  # The speed starts low and grows/shrinks automatically between these two bounds (bytes per second).
+  max-bytes-per-second-per-player: 16777216
+  # Hard cap for all players together (bytes per second). Encoding and compressing map packets costs CPU on the
+  # network threads, so even many players joining at once cannot starve everyone else's connection.
+  max-total-bytes-per-second: 41943040
+  min-bytes-per-second-per-player: 16384
+  # How much map data may sit unsent in a player's network buffer at once (bytes). Lower = lower ping impact.
+  max-pending-bytes-per-player: 98304
+  # Emage measures how long its own data makes each player wait (a tiny ping packet every ~150 ms while pictures are
+  # being sent) and slows down for that player when the wait exceeds this many milliseconds.
+  # Lower = smoother ping on weak connections but slower loading for them.
+  target-queue-delay-ms: 80
+  # Set to false to rely only on the network buffer fill level (for clients/proxies that mishandle ping packets).
+  latency-probe: true
 
 storage:
   database:
@@ -36,48 +54,55 @@ feedback:
     start: "block.note_block.chime"
 
 messages:
-  prefix: "<b><gradient:#F57E3A:#CB6E38:#C36220>Emage</gradient></b> <dark_gray>•</dark_gray> "
-  usage: "<red>Использование: <gray>/emage apply <url> [колонки] [строки]"
-  no-frame: "<red>Вы должны смотреть на рамку."
-  invalid-url: "<red>Указана недопустимая или заблокированная ссылка."
-  only-players: "<red>Эту команду могут использовать только игроки."
-  processing-started: "<color:#fd6039>Обработка изображения для сетки <color:#f3c6bb><width>x<height></color>. Пожалуйста, подождите..."
-  downloading: "<color:#4CABBB>Загрузка...</color>"
-  processing-frames: "<color:#4CABBB>Обработка кадров: <white><percent>%</white></color>"
-  undo-name: "Отменить"
-  undo-hover: "Нажмите, чтобы удалить это изображение"
-  success: "<green>Изображение успешно наложено на <color:#f3c6bb><total></color> рамок! <gray>[<red><click:run_command:'/emage remove <sync_group_id>'><hover:show_text:'<undo_hover>'><undo_name></hover></click></red>]</gray>"
-  error: "<red>Произошла ошибка: <gray><error>"
-  process-error: "<red>Не удалось обработать изображение: <gray><error>"
-  read-error: "<red>Ошибка чтения изображения: <gray><error>"
-  max-tasks-reached: "<red>Сервер в данный момент обрабатывает максимальное количество изображений. Пожалуйста, подождите."
-  cooldown-active: "<red>Слишком часто! Подождите перед наложением следующего изображения."
-  auto-detect-failed: "<red>Не удалось автоматически определить сетку рамок. Пропущенное место подсвечено."
-  not-enough-frames: "<red>Обнаружены недостающие рамки на этой стене. Пропущенное место подсвечено."
-  gif-size-limit: "<red>GIF ограничены максимальным размером сетки <color:#f3c6bb><max_width>x<max_height></color>."
-  image-size-limit: "<red>Изображения ограничены максимальным размером сетки <color:#f3c6bb><max_width>x<max_height></color>."
-  gif-frame-limit: "<red>GIF ограничены максимум <color:#f3c6bb><max_frames></color> кадрами. (В предоставленной GIF: <color:#f3c6bb><frames></color>)"
-  not-emage-frame: "<red>Эта рамка не содержит изображение Emage."
-  metadata-not-found: "<red>Метаданные сетки не найдены в базе данных."
-  grid-removed: "<green>Изображение успешно удалено."
-  cleanup-failed: "<red>Не удалось очистить файлы."
-  config-reloaded: "<green>Конфигурация и сообщения успешно перезагружены."
-  protected-frame: "<red>Эта рамка защищена. Используйте <color:#f3c6bb>/emage remove</color>, чтобы удалить её."
-  smart-url-hint: "<gray><i>Подсказка: Убедитесь, что используете прямую ссылку на изображение, заканчивающуюся на .png, .jpg или .gif (не ссылка на страницу Imgur/Discord!)</i>"
-  undo-mismatch: "<red>Вы смотрите на другое изображение, не на то, для которого была кнопка отмены."
-  no-permission: "<red>У вас нет прав для удаления этого изображения."
-  info-header: "<gradient:#F57E3A:#CB6E38:#C36220>Информация об изображении:</gradient>"
-  info-author: "<gray>Автор: <color:#f3c6bb><author></color>"
-  info-date: "<gray>Дата создания: <color:#f3c6bb><date></color>"
-  info-size: "<gray>Размер сетки: <color:#f3c6bb><width>x<height></color> (<total> рамок)"
-  info-animated: "<gray>Анимация: <color:#f3c6bb><frames></color> кадров (<delay> мс)"
-  info-url: "<gray>Источник: <click:open_url:'<url>'><hover:show_text:'Нажмите, чтобы открыть ссылку'><color:#4CABBB><u>[Открыть ссылку]</u></color></hover></click>"
-  unsupported-format: "Неподдерживаемый формат изображения или повреждённый файл."
-  error-unknown-host: "Не удалось найти сервер. Проверьте URL или подключение к интернету."
-  error-timeout: "Сервер слишком долго отвечает. Возможно, он недоступен или перегружен."
-  error-connect: "Не удалось подключиться к серверу. Хост недоступен или блокирует соединение."
-  error-ssl: "Ошибка SSL/TLS. Сертификат сайта может быть недействительным."
-  error-size-limit: "Превышен лимит размера загружаемого файла."
-  error-dimensions-limit: "Разрешение изображения превышает допустимый безопасный предел."
-  error-blocked: "Доступ к указанному IP-адресу или ресурсу заблокирован в целях безопасности."
-  error-unknown: "Произошла неизвестная ошибка."
+  prefix: "<#CDDEDF> ꜰ<#C7DDD3>ᴏ<#C1DDC6>x<#BEDDC0>ᴡ<#BBDCBA>ᴀ<#AEDCBD>ʀ<#A1DCC0>д <#94DCC3>▢ <white>"
+
+  usage: "<white>иᴄпᴏльзᴏʙᴀʜиᴇ: <#D4EECC>/emage apply <url> [колонки] [строки]</#D4EECC></white>"
+  no-frame: "<white>ʙы дᴏлжʜы ᴄᴍᴏᴛᴘᴇᴛь ʜᴀ ᴘᴀᴍᴋу для пᴘᴇдᴍᴇᴛᴀ!</white>"
+  invalid-url: "<white>уᴋᴀжиᴛᴇ ᴋᴏᴘᴘᴇᴋᴛʜый ᴜʀʟ.</white>"
+  only-players: "<white>эᴛᴀ ᴋᴏᴍᴀʜдᴀ дᴏᴄᴛупʜᴀ ᴛᴏльᴋᴏ игᴘᴏᴋᴀᴍ!</white>"
+  processing-started: "<white>ᴏбʜᴀᴘужᴇʜᴀ ᴄᴇᴛᴋᴀ: <#D4EECC><width>x<height></#D4EECC>... пᴏжᴀлуйᴄᴛᴀ, пᴏдᴏждиᴛᴇ.</white>"
+
+  downloading: "<#D4EECC>зᴀгᴘузᴋᴀ...</#D4EECC>"
+  processing-frames: "<#D4EECC>ᴏбᴘᴀбᴏᴛᴋᴀ ᴋᴀдᴘᴏʙ: <white><percent>%</white></#D4EECC>"
+
+  undo-name: "ᴏᴛᴍᴇʜиᴛь"
+  undo-hover: "ʜᴀжᴍиᴛᴇ, чᴛᴏбы удᴀлиᴛь эᴛᴏ изᴏбᴘᴀжᴇʜиᴇ"
+  success: "<white>изᴏбᴘᴀжᴇʜиᴇ уᴄпᴇшʜᴏ пᴘиᴍᴇʜᴇʜᴏ ᴋ <#D4EECC><total></#D4EECC> ᴘᴀᴍᴋᴇ(ᴀᴍ)! [<#D4EECC><click:run_command:'/emage remove <sync_group_id>'><hover:show_text:'<undo_hover>'><undo_name></hover></click></#D4EECC>]</white>"
+
+  error: "<white>пᴘᴏизᴏшлᴀ ᴏшибᴋᴀ: <#D4EECC><error></#D4EECC>.</white>"
+  process-error: "<white>ʜᴇ удᴀлᴏᴄь ᴏбᴘᴀбᴏᴛᴀᴛь изᴏбᴘᴀжᴇʜиᴇ: <#D4EECC><error></#D4EECC>.</white>"
+  read-error: "<white>ᴏшибᴋᴀ чᴛᴇʜия изᴏбᴘᴀжᴇʜия: <#D4EECC><error></#D4EECC>.</white>"
+  max-tasks-reached: "<white>ᴄᴇᴘʙᴇᴘ зᴀʜяᴛ ᴏбᴘᴀбᴏᴛᴋᴏй дᴘугиx изᴏбᴘᴀжᴇʜий. пᴏпᴘᴏбуйᴛᴇ пᴏзжᴇ.</white>"
+  cooldown-active: "<white>пᴏдᴏждиᴛᴇ пᴇᴘᴇд ᴏбᴘᴀбᴏᴛᴋᴏй ᴄлᴇдующᴇгᴏ изᴏбᴘᴀжᴇʜия.</white>"
+  auto-detect-failed: "<white>ʜᴇ удᴀлᴏᴄь ᴀʙᴛᴏᴍᴀᴛичᴇᴄᴋи ᴏпᴘᴇдᴇлиᴛь ᴄᴇᴛᴋу. пуᴄᴛᴀя ᴘᴀᴍᴋᴀ пᴏдᴄʙᴇчᴇʜᴀ.</white>"
+  not-enough-frames: "<white>ʜᴀ ᴄᴛᴇʜᴇ ʜᴇ xʙᴀᴛᴀᴇᴛ ᴘᴀᴍᴏᴋ. ᴍᴇᴄᴛᴏ пᴏдᴄʙᴇчᴇʜᴏ.</white>"
+  gif-size-limit: "<white>ᴄᴇᴛᴋᴀ ɢɪꜰ ᴄлишᴋᴏᴍ бᴏльшᴀя! ᴍᴀᴋᴄиᴍуᴍ: <#D4EECC><max_width>x<max_height></#D4EECC>.</white>"
+  image-size-limit: "<white>изᴏбᴘᴀжᴇʜиᴇ ᴄлишᴋᴏᴍ бᴏльшᴏᴇ! ᴍᴀᴋᴄиᴍуᴍ: <#D4EECC><max_width>x<max_height></#D4EECC>.</white>"
+  gif-frame-limit: "<white>лиᴍиᴛ ᴋᴀдᴘᴏʙ ɢɪꜰ: <#D4EECC><max_frames></#D4EECC>. (ʙ ʙᴀшᴇй гифᴋᴇ <#D4EECC><frames></#D4EECC>)</white>"
+  not-emage-frame: "<white>эᴛᴀ ᴘᴀᴍᴋᴀ ʜᴇ ᴄᴏдᴇᴘжиᴛ ᴋᴀᴘᴛиʜу.</white>"
+  metadata-not-found: "<white>ᴍᴇᴛᴀдᴀʜʜыᴇ ᴄᴇᴛᴋи ʜᴇ ʜᴀйдᴇʜы ʙ бᴀзᴇ дᴀʜʜыx.</white>"
+  grid-removed: "<white>ᴋᴀᴘᴛиʜᴀ уᴄпᴇшʜᴏ удᴀлᴇʜᴀ.</white>"
+  cleanup-failed: "<white>ʜᴇ удᴀлᴏᴄь ᴏчиᴄᴛиᴛь ʜᴇиᴄпᴏльзуᴇᴍыᴇ фᴀйлы.</white>"
+  config-reloaded: "<white>ᴋᴏʜфигуᴘᴀция и ᴄᴏᴏбщᴇʜия пᴇᴘᴇзᴀгᴘужᴇʜы!</white>"
+  protected-frame: "<white>эᴛᴏ изᴏбᴘᴀжᴇʜиᴇ зᴀщищᴇʜᴏ. иᴄпᴏльзуйᴛᴇ <#D4EECC>/emage remove</#D4EECC> для удᴀлᴇʜия.</white>"
+  smart-url-hint: "<white>пᴏдᴄᴋᴀзᴋᴀ: убᴇдиᴛᴇᴄь, чᴛᴏ ᴄᴄылᴋᴀ пᴘяᴍᴀя и ᴏᴋᴀʜчиʙᴀᴇᴛᴄя ʜᴀ <#D4EECC>.png</#D4EECC>, <#D4EECC>.jpg</#D4EECC> или <#D4EECC>.gif</#D4EECC></white>"
+  undo-mismatch: "<white>ʙы ᴄᴍᴏᴛᴘиᴛᴇ ʜᴀ дᴘугᴏй ᴘᴇʜдᴇᴘ, ᴀ ʜᴇ ʜᴀ ᴛᴏᴛ, для ᴋᴏᴛᴏᴘᴏгᴏ былᴀ эᴛᴀ ᴏᴛᴍᴇʜᴀ.</white>"
+  no-permission: "<white>у ʙᴀᴄ ʜᴇᴛ пᴘᴀʙ ʜᴀ удᴀлᴇʜиᴇ эᴛᴏгᴏ изᴏбᴘᴀжᴇʜия.</white>"
+
+  info-header: "<#D4EECC>иʜфᴏᴘᴍᴀция ᴏб изᴏбᴘᴀжᴇʜии:</#D4EECC>"
+  info-author: "<white>ᴀʙᴛᴏᴘ: <#D4EECC><author></#D4EECC></white>"
+  info-date: "<white>дᴀᴛᴀ ᴄᴏздᴀʜия: <#D4EECC><date></#D4EECC></white>"
+  info-unknown-date: "ʜᴇизʙᴇᴄᴛʜᴏ"
+  info-size: "<white>ᴘᴀзᴍᴇᴘ ᴄᴇᴛᴋи: <#D4EECC><width>x<height></#D4EECC> (<#D4EECC><total></#D4EECC> ᴘᴀᴍᴏᴋ)</white>"
+  info-animated: "<white>ᴀʜиᴍᴀция: <#D4EECC><frames></#D4EECC> ᴋᴀдᴘᴏʙ (<#D4EECC><delay></#D4EECC> ᴍᴄ)</white>"
+  info-url: "<white>иᴄᴛᴏчʜиᴋ: <click:open_url:'<url>'><hover:show_text:'ʜᴀжᴍиᴛᴇ, чᴛᴏбы ᴏᴛᴋᴘыᴛь ᴄᴄылᴋу'><#D4EECC><u>[ᴏᴛᴋᴘыᴛь ᴄᴄылᴋу]</u></#D4EECC></hover></click></white>"
+
+  unsupported-format: "ʜᴇпᴏддᴇᴘжиʙᴀᴇᴍый фᴏᴘᴍᴀᴛ изᴏбᴘᴀжᴇʜия или пᴏʙᴘᴇждёʜʜый фᴀйл"
+  error-unknown-host: "ʜᴇ удᴀлᴏᴄь ʜᴀйᴛи ᴄᴇᴘʙᴇᴘ. пᴘᴏʙᴇᴘьᴛᴇ ᴜʀʟ или пᴏдᴋлючᴇʜиᴇ ᴋ иʜᴛᴇᴘʜᴇᴛу"
+  error-timeout: "ᴄᴇᴘʙᴇᴘ ᴄлишᴋᴏᴍ дᴏлгᴏ ᴏᴛʙᴇчᴀᴇᴛ. ʙᴏзᴍᴏжʜᴏ, ᴏʜ ʜᴇдᴏᴄᴛупᴇʜ или пᴇᴘᴇгᴘужᴇʜ"
+  error-connect: "ʜᴇ удᴀлᴏᴄь пᴏдᴋлючиᴛьᴄя ᴋ ᴄᴇᴘʙᴇᴘу. xᴏᴄᴛ ʜᴇдᴏᴄᴛупᴇʜ или блᴏᴋиᴘуᴇᴛ ᴄᴏᴇдиʜᴇʜиᴇ"
+  error-ssl: "ᴏшибᴋᴀ ѕѕʟ/ᴛʟѕ. ᴄᴇᴘᴛифиᴋᴀᴛ ᴄᴀйᴛᴀ ᴍᴏжᴇᴛ быᴛь ʜᴇдᴇйᴄᴛʙиᴛᴇльʜыᴍ"
+  error-size-limit: "пᴘᴇʙышᴇʜ лиᴍиᴛ ᴘᴀзᴍᴇᴘᴀ зᴀгᴘужᴀᴇᴍᴏгᴏ фᴀйлᴀ"
+  error-dimensions-limit: "ᴘᴀзᴘᴇшᴇʜиᴇ изᴏбᴘᴀжᴇʜия пᴘᴇʙышᴀᴇᴛ дᴏпуᴄᴛиᴍый бᴇзᴏпᴀᴄʜый пᴘᴇдᴇл"
+  error-blocked: "дᴏᴄᴛуп ᴋ уᴋᴀзᴀʜʜᴏᴍу ɪᴘ-ᴀдᴘᴇᴄу или ᴘᴇᴄуᴘᴄу зᴀблᴏᴋиᴘᴏʙᴀʜ ʙ цᴇляx бᴇзᴏпᴀᴄʜᴏᴄᴛи"
+  error-unknown: "пᴘᴏизᴏшлᴀ ʜᴇизʙᴇᴄᴛʜᴀя ᴏшибᴋᴀ"

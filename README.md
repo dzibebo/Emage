@@ -24,6 +24,20 @@ To display an image, place Item Frames on a wall in a rectangular grid. Look at 
 | `/emage apply <url>`                       | Auto-detects the frame grid and applies the image/GIF. |
 | `/emage remove`                            | Remove the grid and its files. (Requires creator or `emage.admin` permission) |
 | `/emage reload`                            | Reload the configuration.                              |
+| `/emage debug`                             | Show the live send rate, queue and measured delay of every player (`emage.admin`). |
+
+## Slow connections
+Map data is never pushed at full speed. Every player has their own sender that keeps a tiny ping packet running through the
+same connection while pictures are transferred and slows down as soon as Emage's own traffic makes that player wait
+(`performance.target-queue-delay-ms`), so ping stays low even on weak internet. Nearby pictures are sent first, pictures
+that are out of range or no longer needed are dropped from the queue, and animations are only streamed to players whose
+connection can keep up with them (they see the still first frame otherwise, never a blank frame).
+
+A GIF in which no frame changes is treated as a still picture, exactly like a PNG/JPG.
+
+Large pictures are fed on demand: only what the player can use soon is queued, ordered by distance and by what they are looking at, so even a 32x32 wall never builds a backlog. To allow grids that big raise `quality.max-image-grid-size`.
+
+The limits live in the `performance` section of `config.yml`.
 
 ## Building
 ```bash

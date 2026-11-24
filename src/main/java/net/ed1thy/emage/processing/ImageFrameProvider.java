@@ -8,6 +8,10 @@ public interface ImageFrameProvider extends AutoCloseable {
     int getFrameWidth(int index);
     int getFrameHeight(int index);
 
+    default java.awt.image.BufferedImage getFrameImage(int index) {
+        return null;
+    }
+
     @Override
     void close() throws Exception;
 }
