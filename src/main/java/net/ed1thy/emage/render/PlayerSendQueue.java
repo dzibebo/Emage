@@ -23,7 +23,7 @@ final class PlayerSendQueue {
     static final double ANIMATION_FULL_TARGET_SECONDS = 0.6;
     static final double ANIMATION_FULL_LOW_TARGET_SECONDS = 0.4;
 
-    private record Sample(long rtt, long sentBytes, boolean clean) {}
+    private record Sample(long rtt, long sentBytes, boolean clean, boolean busy) {}
 
     record Tuning(int minBytesPerSecond, int maxBytesPerSecond, int maxPendingBytes, int targetDelayMs, boolean latencyProbe) {}
 
@@ -80,6 +80,11 @@ final class PlayerSendQueue {
     private long totalSentBytes;
     private volatile long probeSentBytes;
     private volatile boolean probeClean;
+    private volatile boolean probeBusy;
+    private double idleRttEwma;
+    private double busyRttEwma;
+    private long idleSamples;
+    private long busySamples;
     private int cleanPhase;
     private long cleanPhaseStart;
     private long lastCleanNanos = Long.MIN_VALUE / 4;
@@ -325,6 +330,12 @@ final class PlayerSendQueue {
         lines.add(String.format("    measured delivery capacity (last 20 s peak) %.0f KB/s; %s",
                 controller.peakDelivery() / 1024.0, controller.stats()));
         lines.add("    ping noise: " + controller.noiseReport());
+        if (idleSamples > 0 && busySamples > 0) {
+            lines.add(String.format("    ping split: %.0f ms recently while Emage sent nothing, %.0f ms while it was sending, so Emage's own data adds about %.0f ms; the rest is the connection and the game itself",
+                    idleRttEwma / 1e6, busyRttEwma / 1e6, Math.max(0.0, busyRttEwma - idleRttEwma) / 1e6));
+        } else {
+            lines.add("    ping split: not enough samples yet (" + idleSamples + " while idle, " + busySamples + " while sending)");
+        }
         return lines;
     }
 
@@ -455,6 +466,13 @@ final class PlayerSendQueue {
         probeTimeouts = 0;
         lastSampleNanos = now;
 
+        if (sample.clean()) {
+            idleRttEwma = idleSamples == 0 ? sample.rtt() : idleRttEwma + (sample.rtt() - idleRttEwma) * 0.15;
+            idleSamples++;
+        } else if (sample.busy()) {
+            busyRttEwma = busySamples == 0 ? sample.rtt() : busyRttEwma + (sample.rtt() - busyRttEwma) * 0.05;
+            busySamples++;
+        }
         controller.onSample(now, sample.rtt(), now - lastLimitedNanos < 400_000_000L, sample.sentBytes(), sample.clean());
         if (sample.clean()) {
             lastCleanNanos = now;
@@ -515,6 +533,7 @@ final class PlayerSendQueue {
         probeSentNanos = now;
         probeSentBytes = totalSentBytes;
         probeClean = cleanGapElapsed(now);
+        probeBusy = now - lastSendNanos < 200_000_000L;
         outstandingProbe = id;
         if (!transport.sendProbe(id)) {
             outstandingProbe = -1;
@@ -527,6 +546,6 @@ final class PlayerSendQueue {
         long rtt = nowNanos - probeSentNanos;
         long sentBytes = probeSentBytes;
         outstandingProbe = -1;
-        pendingSample.set(new Sample(Math.max(0L, rtt), sentBytes, probeClean));
+        pendingSample.set(new Sample(Math.max(0L, rtt), sentBytes, probeClean, probeBusy));
     }
 }
