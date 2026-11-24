@@ -54,8 +54,9 @@ every player is sent exactly the map data they need, never faster than their con
 ## Behind Velocity / BungeeCord
 Emage measures the whole path (player - proxy - server), so a proxy needs no special setting and every player gets the speed of
 his own connection. For the best result set `network-compression-threshold=-1` in the `server.properties` of every backend
-server behind the proxy (this is what the Velocity documentation recommends): otherwise each map packet is compressed by the
-backend, decompressed by the proxy and compressed again, which costs a lot of CPU when many maps are streamed. Keep
+server behind the proxy (the Velocity FAQ recommends this: most of the proxy's CPU goes to decompressing and recompressing
+packets, so only the proxy should compress): otherwise each map packet is compressed by the backend, decompressed by the proxy
+and compressed again, which costs a lot of CPU when many maps are streamed. Emage warns about this at startup and in `/emage debug`. Keep
 `performance.max-total-bytes-per-second` at what your backend-to-proxy link and the proxy's CPU can carry.
 
 `/emage debug` shows per player the send rate, queue and measured delay, and per GIF how many players it is being played for.

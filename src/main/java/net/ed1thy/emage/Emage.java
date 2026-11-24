@@ -141,6 +141,11 @@ public class Emage extends JavaPlugin {
         commandRegistry.registerCommands();
 
         preloadClasses();
+        net.ed1thy.emage.util.NetworkEnvironment.Info network = net.ed1thy.emage.util.NetworkEnvironment.detect(getServer().getWorldContainer());
+        String networkAdvice = net.ed1thy.emage.util.NetworkEnvironment.advice(network);
+        if (networkAdvice != null) {
+            getLogger().warning(networkAdvice);
+        }
         getLogger().info("Emage enabled!");
     }
 

@@ -309,6 +309,10 @@ public class RenderManager implements FrameSink {
         String containerText = container == null ? "unknown" : (container[1] / (1024 * 1024)) + "/" + (container[0] / (1024 * 1024)) + " MB";
         lines.add("Memory: heap " + heapUsed + "/" + heapMax + " MB, network buffer pool " + direct + " MB, container " + containerText + ", "
                 + userPacketQueues.size() + " active sender(s)");
+        net.ed1thy.emage.util.NetworkEnvironment.Info network = net.ed1thy.emage.util.NetworkEnvironment.detect(Bukkit.getWorldContainer());
+        lines.add(net.ed1thy.emage.util.NetworkEnvironment.summary(network));
+        String networkAdvice = net.ed1thy.emage.util.NetworkEnvironment.advice(network);
+        if (networkAdvice != null) lines.add("ADVICE: " + networkAdvice);
         lines.add(String.format("Emage tick loop: average %.2f ms, worst recently %.2f ms (runs every 20 ms)", tickAvgNanos / 1e6, tickMaxNanos / 1e6));
         long nowNanos = System.nanoTime();
         for (Map.Entry<User, PlayerSendQueue> entry : userPacketQueues.entrySet()) {
