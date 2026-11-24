@@ -489,6 +489,25 @@ public class RenderManager implements FrameSink {
         }
     }
 
+    public void refreshPlayer(@NotNull UUID uuid) {
+        renderLock.lock();
+        try {
+            User user = chunkViewerTracker.getUser(uuid);
+            if (user == null) return;
+            PlayerSendQueue queue = userPacketQueues.get(user);
+            if (queue != null) queue.drain();
+            for (SyncGroup group : activeGroups.values()) {
+                if (!group.hasViewer(uuid)) continue;
+                group.clearUserState(uuid);
+                for (FrameNode node : group.getNodes()) {
+                    pendingSpoofs.add(new SpoofTask(user, node));
+                }
+            }
+        } finally {
+            renderLock.unlock();
+        }
+    }
+
     public void queueSpoof(@NotNull User user, @NotNull FrameNode node) {
         pendingSpoofs.add(new SpoofTask(user, node));
     }

@@ -25,6 +25,8 @@ public class MessageManager {
     private Component gridRemoved;
     private Component cleanupFailed;
     private Component configReloaded;
+    private Component refreshStarted;
+    private String refreshWaitRaw;
     private Component smartUrlHint;
     private Component undoMismatch;
     private Component noPermission;
@@ -96,6 +98,8 @@ public class MessageManager {
         this.gridRemoved = prefix.append(miniMessage.deserialize(config.getString("messages.grid-removed", "<green>Изображение успешно удалено.")));
         this.cleanupFailed = prefix.append(miniMessage.deserialize(config.getString("messages.cleanup-failed", "<red>Не удалось очистить файлы.")));
         this.configReloaded = prefix.append(miniMessage.deserialize(config.getString("messages.config-reloaded", "<green>Конфигурация и сообщения успешно перезагружены.")));
+        this.refreshStarted = prefix.append(miniMessage.deserialize(config.getString("messages.refresh-started", "<white>ᴏбʜᴏʙляю ʙᴄᴇ ᴋᴀᴘᴛиʜы и гифᴋи ʙᴏᴋᴘуг ʙᴀᴄ...</white>")));
+        this.refreshWaitRaw = config.getString("messages.refresh-wait", "<white>пᴏдᴏждиᴛᴇ <seconds> ᴄᴇᴋ. пᴇᴘᴇд ᴄлᴇдующим ᴏбʜᴏʙлᴇʜиᴇм.</white>");
         this.smartUrlHint = prefix.append(miniMessage.deserialize(config.getString("messages.smart-url-hint", "<gray><i>Подсказка: Убедитесь, что используете прямую ссылку на изображение, заканчивающуюся на .png, .jpg или .gif (не ссылка на страницу Imgur/Discord!)</i>")));
         this.undoMismatch = prefix.append(miniMessage.deserialize(config.getString("messages.undo-mismatch", "<red>Вы смотрите на другое изображение, не на то, для которого была кнопка отмены.")));
         this.noPermission = prefix.append(miniMessage.deserialize(config.getString("messages.no-permission", "<red>У вас нет прав для удаления этого изображения.")));
@@ -213,6 +217,16 @@ public class MessageManager {
             audience.sendMessage(prefix.append(miniMessage.deserialize(this.infoUrlRaw.replace("<url>", url))));
         }
         playSafely(audience, successSound);
+    }
+
+    public void sendRefreshStarted(@NotNull Audience audience) {
+        audience.sendMessage(this.refreshStarted);
+        playSafely(audience, successSound);
+    }
+
+    public void sendRefreshWait(@NotNull Audience audience, int seconds) {
+        audience.sendMessage(prefix.append(miniMessage.deserialize(refreshWaitRaw.replace("<seconds>", String.valueOf(seconds)))));
+        playSafely(audience, errorSound);
     }
 
     public void sendConfigReloaded(@NotNull Audience audience) {

@@ -65,6 +65,7 @@ public class CommandRegistry {
     private final ExecutorService vtExecutor;
 
     private final Cache<UUID, Long> playerCooldowns;
+    private final Cache<UUID, Long> refreshCooldowns = Caffeine.newBuilder().expireAfterWrite(30, java.util.concurrent.TimeUnit.SECONDS).build();
     private final AtomicInteger activeProcessingTasks = new AtomicInteger(0);
 
     public CommandRegistry(@NotNull Emage plugin, @NotNull ConfigManager configManager, @NotNull MessageManager messageManager,
@@ -164,6 +165,24 @@ public class CommandRegistry {
                     ctx.sender().getSender().sendMessage(net.kyori.adventure.text.Component.text(saved == null
                             ? "Emage: could not save the full report"
                             : "Emage: full report with every detail saved to " + saved));
+                })
+        );
+
+        commandManager.command(builder.literal("refresh")
+                .handler(ctx -> {
+                    if (!(ctx.sender().getSender() instanceof Player player)) {
+                        messageManager.sendOnlyPlayers(ctx.sender().getSender());
+                        return;
+                    }
+                    long now = System.currentTimeMillis();
+                    Long last = refreshCooldowns.getIfPresent(player.getUniqueId());
+                    if (last != null && now - last < 15_000L) {
+                        messageManager.sendRefreshWait(player, (int) Math.ceil((15_000L - (now - last)) / 1000.0));
+                        return;
+                    }
+                    refreshCooldowns.put(player.getUniqueId(), now);
+                    renderManager.refreshPlayer(player.getUniqueId());
+                    messageManager.sendRefreshStarted(player);
                 })
         );
 

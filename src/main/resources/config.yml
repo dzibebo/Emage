@@ -102,6 +102,8 @@ messages:
   metadata-not-found: "<white>ᴍᴇᴛᴀдᴀʜʜыᴇ ᴄᴇᴛᴋи ʜᴇ ʜᴀйдᴇʜы ʙ бᴀзᴇ дᴀʜʜыx.</white>"
   grid-removed: "<white>ᴋᴀᴘᴛиʜᴀ уᴄпᴇшʜᴏ удᴀлᴇʜᴀ.</white>"
   cleanup-failed: "<white>ʜᴇ удᴀлᴏᴄь ᴏчиᴄᴛиᴛь ʜᴇиᴄпᴏльзуᴇᴍыᴇ фᴀйлы.</white>"
+  refresh-started: "<white>ᴏбʜᴏʙляю ʙᴄᴇ ᴋᴀᴘᴛиʜы и гифᴋи ʙᴏᴋᴘуг ʙᴀᴄ...</white>"
+  refresh-wait: "<white>пᴏдᴏждиᴛᴇ <seconds> ᴄᴇᴋ. пᴇᴘᴇд ᴄлᴇдующим ᴏбʜᴏʙлᴇʜиᴇм.</white>"
   config-reloaded: "<white>ᴋᴏʜфигуᴘᴀция и ᴄᴏᴏбщᴇʜия пᴇᴘᴇзᴀгᴘужᴇʜы!</white>"
   protected-frame: "<white>эᴛᴏ изᴏбᴘᴀжᴇʜиᴇ зᴀщищᴇʜᴏ. иᴄпᴏльзуйᴛᴇ <#D4EECC>/emage remove</#D4EECC> для удᴀлᴇʜия.</white>"
   smart-url-hint: "<white>пᴏдᴄᴋᴀзᴋᴀ: убᴇдиᴛᴇᴄь, чᴛᴏ ᴄᴄылᴋᴀ пᴘяᴍᴀя и ᴏᴋᴀʜчиʙᴀᴇᴛᴄя ʜᴀ <#D4EECC>.png</#D4EECC>, <#D4EECC>.jpg</#D4EECC> или <#D4EECC>.gif</#D4EECC></white>"

@@ -459,4 +459,19 @@ class AnimationDistributionTest {
 
         assertClientEqualsServer(sink, 2);
     }
+
+    @Test
+    void refreshingAViewerRebuildsExactlyTheServerPicture() throws Exception {
+        ClientSink sink = new ClientSink();
+        group.setViewerStateForTesting(viewer, true, true);
+        run(sink, 60);
+
+        sink.client.clear();
+        group.clearUserState(viewer);
+        run(sink, 80);
+        group.freezeClockForTesting();
+        run(sink, 40);
+
+        assertClientEqualsServer(sink, 2);
+    }
 }
