@@ -18,6 +18,7 @@ final class AnimationCanvas {
     private final int[] historySize;
     private int seq;
     private long changedBytes;
+    private long changedPixels;
 
     AnimationCanvas(int count) {
         this.count = count;
@@ -40,6 +41,23 @@ final class AnimationCanvas {
         long value = changedBytes;
         changedBytes = 0;
         return value;
+    }
+
+    /** Pixels that really changed (the bounding boxes counted by {@link #takeChangedBytes()} also hold unchanged ones). */
+    long takeChangedPixels() {
+        long value = changedPixels;
+        changedPixels = 0;
+        return value;
+    }
+
+    /** Pixels of a map that are transparent (map colors 0-3 draw nothing): the picture shows the frame behind it there. */
+    int transparentPixels(int index) {
+        byte[] data = pixels[index];
+        int n = 0;
+        for (byte b : data) {
+            if ((b & 0xFF) < 4) n++;
+        }
+        return n;
     }
 
     int beginFrame() {
@@ -82,6 +100,9 @@ final class AnimationCanvas {
             if (first < 0) continue;
             int last = width - 1;
             while (target[base + last] == row[last]) last--;
+            for (int k = first; k <= last; k++) {
+                if (target[base + k] != row[k]) changedPixels++;
+            }
             System.arraycopy(row, first, target, base + first, last - first + 1);
             int py = z + dy;
             if (x + first < minX) minX = x + first;

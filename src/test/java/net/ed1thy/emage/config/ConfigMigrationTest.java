@@ -32,7 +32,7 @@ class ConfigMigrationTest {
 
         assertEquals(20, config.getInt("performance.target-queue-delay-ms"));
         assertEquals(48, config.getInt("performance.animated-view-distance-blocks"));
-        assertEquals(8388608, config.getInt("performance.max-bytes-per-second-per-player"));
+        assertEquals(16777216, config.getInt("performance.max-bytes-per-second-per-player"));
         assertEquals(67108864, config.getInt("performance.max-total-bytes-per-second"));
         assertEquals(10, config.getInt("quality.max-gif-grid-size"));
         assertEquals(32768, config.getInt("performance.min-bytes-per-second-per-player"));

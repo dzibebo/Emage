@@ -103,6 +103,8 @@ public class SyncGroup {
     private record BurstClaim(SyncGroup owner) {}
     private final Map<UUID, Long> batchProgressMillis = new ConcurrentHashMap<>();
     private volatile double frameBytesEwma;
+    private volatile double framePixelsEwma;
+    private final Map<UUID, Long> batchStartMillis = new ConcurrentHashMap<>();
     private volatile long clockStalls;
     private volatile int clockWaitingFrame = -1;
     private volatile String staticReason = "";
@@ -113,6 +115,23 @@ public class SyncGroup {
         long lastMillis;
         double bytesPerSecond;
         double packetsPerSecond;
+        double frameWeight;
+        long frameWeightMillis;
+        double wipeMillisAverage;
+        double wipeMillisWorst;
+        long framesTotal;
+
+        double currentBytesPerSecond(long now) {
+            return bytesPerSecond * Math.exp(-Math.max(0L, now - lastMillis) / 3000.0);
+        }
+
+        double currentPacketsPerSecond(long now) {
+            return packetsPerSecond * Math.exp(-Math.max(0L, now - lastMillis) / 3000.0);
+        }
+
+        double framesPerSecond(long now) {
+            return frameWeight * Math.exp(-Math.max(0L, now - frameWeightMillis) / 10_000.0) / 10.0;
+        }
     }
 
     private volatile double minX, minY, minZ, maxX, maxY, maxZ;
@@ -455,6 +474,7 @@ public class SyncGroup {
         releaseBatch(uuid);
         BURST_OWNERS.computeIfPresent(uuid, (k, claim) -> claim.owner() == this ? null : claim);
         batchProgressMillis.remove(uuid);
+        batchStartMillis.remove(uuid);
         frozenViewers.remove(uuid);
         throttles.remove(uuid);
         viewerSeq.remove(uuid);
@@ -761,6 +781,8 @@ public class SyncGroup {
             }
             long changed = current.takeChangedBytes();
             frameBytesEwma = frameBytesEwma == 0 ? changed : frameBytesEwma * 0.9 + changed * 0.1;
+            long changedPixels = current.takeChangedPixels();
+            framePixelsEwma = framePixelsEwma == 0 ? changedPixels : framePixelsEwma * 0.9 + changedPixels * 0.1;
             canvasFrame = next;
             lastClockMillis += delay;
             if (nowMillis - lastClockMillis > 4L * delay) lastClockMillis = nowMillis;
@@ -831,7 +853,10 @@ public class SyncGroup {
                 spent += done[0];
                 packets += (int) done[1];
                 if (done[0] > 0) batchProgressMillis.put(uuid, tickNowMillis);
-                if (batch.isEmpty()) batches.remove(uuid, batch);
+                if (batch.isEmpty()) {
+                    batches.remove(uuid, batch);
+                    finishBatch(uuid);
+                }
             }
         }
         boolean batchActive = batch != null && !batch.isEmpty();
@@ -883,6 +908,7 @@ public class SyncGroup {
                         charge += bytes;
                         packets++;
                     }
+                    if (diffs != null && packets > 0) recordFrame(uuid, 0L);
                 } else if (total > SMALL_BATCH_BYTES && !claimBurst(uuid)) {
                     // another big frame is still on its way to this player: wait for it instead of starting a second half-sent one
                 } else {
@@ -897,11 +923,15 @@ public class SyncGroup {
                     }
                     batches.put(uuid, fresh);
                     batchProgressMillis.put(uuid, tickNowMillis);
+                    batchStartMillis.put(uuid, tickNowMillis);
                     charge += total;
                     long[] done = drainBatch(uuid, fresh, sentMaps, sink, Math.max(1, allowance));
                     spent += done[0];
                     packets += (int) done[1];
-                    if (fresh.isEmpty()) batches.remove(uuid, fresh);
+                    if (fresh.isEmpty()) {
+                        batches.remove(uuid, fresh);
+                        finishBatch(uuid);
+                    }
                 }
             }
         }
@@ -1164,6 +1194,21 @@ public class SyncGroup {
         return servedBytes * Math.exp(-elapsed * Math.log(2.0) / SERVED_HALF_LIFE_MILLIS);
     }
 
+    private void recordFrame(UUID uuid, long wipeMillis) {
+        ViewerStats stats = viewerStats.computeIfAbsent(uuid, k -> new ViewerStats());
+        long now = tickNowMillis;
+        stats.frameWeight = stats.frameWeight * Math.exp(-Math.max(0L, now - stats.frameWeightMillis) / 10_000.0) + 1.0;
+        stats.frameWeightMillis = now;
+        stats.wipeMillisAverage += (wipeMillis - stats.wipeMillisAverage) * 0.2;
+        stats.wipeMillisWorst = Math.max(wipeMillis, stats.wipeMillisWorst * 0.97);
+        stats.framesTotal++;
+    }
+
+    private void finishBatch(UUID uuid) {
+        Long started = batchStartMillis.remove(uuid);
+        recordFrame(uuid, started == null ? 0L : Math.max(0L, tickNowMillis - started));
+    }
+
     private void recordViewer(UUID uuid, long bytes, int packets) {
         ViewerStats stats = viewerStats.computeIfAbsent(uuid, k -> new ViewerStats());
         long now = tickNowMillis;
@@ -1232,9 +1277,32 @@ public class SyncGroup {
             if (clockWaitingFrame >= 0) sb.append(" (waiting for frame ").append(clockWaitingFrame).append(" to load)");
             sb.append(", clock stalls ").append(clockStalls);
             sb.append(String.format(", changed data per frame %.0f KB (%.1f MB/s at original speed)", frameBytes / 1024.0, demand / (1024.0 * 1024.0)));
+            if (frameBytes > 0) {
+                sb.append(String.format(", of which really changed pixels %.0f KB (%.0f%%)", framePixelsEwma / 1024.0, 100.0 * framePixelsEwma / frameBytes));
+            }
+        }
+        AnimationCanvas current = canvas;
+        if (animated && current != null) {
+            int columns = Math.max(1, metadata.columns());
+            int count = current.count();
+            long transparent = 0;
+            long[] perRow = new long[count / columns + 2];
+            for (int i = 0; i < count; i++) {
+                int zeros = current.transparentPixels(i);
+                transparent += zeros;
+                perRow[i / columns] += zeros;
+            }
+            if (transparent == 0) {
+                sb.append(", no transparent pixels in the current picture");
+            } else {
+                int worstRow = 0;
+                for (int r = 1; r < perRow.length; r++) if (perRow[r] > perRow[worstRow]) worstRow = r;
+                double rowShare = 100.0 * perRow[worstRow] / ((double) columns * AnimationCanvas.MAP_BYTES);
+                sb.append(String.format(", TRANSPARENT pixels in the current picture: %d (%.2f%%), the most in map row %d of %d (%.1f%% of that row)",
+                        transparent, 100.0 * transparent / ((double) count * AnimationCanvas.MAP_BYTES), worstRow + 1, Math.max(1, count / columns), rowShare));
+            }
         }
         lines.add(sb.toString());
-        AnimationCanvas current = canvas;
         for (UUID uuid : inRangePlayers) {
             Player player = Bukkit.getPlayer(uuid);
             String name = player == null ? uuid.toString().substring(0, 8) : player.getName();
@@ -1276,7 +1344,12 @@ public class SyncGroup {
             }
             ViewerStats stats = viewerStats.get(uuid);
             if (stats != null) {
-                v.append(String.format(", sending %.0f KB/s (%.0f packets/s), %d KB total", stats.bytesPerSecond / 1024.0, stats.packetsPerSecond, stats.bytes / 1024));
+                long statsNow = System.currentTimeMillis();
+                v.append(String.format(", sending %.0f KB/s (%.0f packets/s), %d KB total", stats.currentBytesPerSecond(statsNow) / 1024.0, stats.currentPacketsPerSecond(statsNow), stats.bytes / 1024));
+                if (animated && stats.framesTotal > 0) {
+                    v.append(String.format(", frames delivered %.1f/s (%d total), one frame needs %.0f ms on average and %.0f ms at worst from its first to its last map",
+                            stats.framesPerSecond(statsNow), stats.framesTotal, stats.wipeMillisAverage, stats.wipeMillisWorst));
+                }
             }
             lines.add(v.toString());
         }

@@ -65,6 +65,25 @@ class AnimationCanvasTest {
     }
 
     @Test
+    void theCanvasCountsReallyChangedPixelsApartFromTheirBoundingBoxAndTransparentOnes() {
+        AnimationCanvas canvas = new AnimationCanvas(1);
+        canvas.applyPacket(0, packet(1, 0, 0, 128, 128, filled(128 * 128, 40)), canvas.beginFrame());
+        canvas.takeChangedBytes();
+        canvas.takeChangedPixels();
+        assertEquals(0, canvas.transparentPixels(0));
+
+        byte[] patch = filled(20 * 20, 40);
+        patch[0] = 50;
+        patch[19 * 20 + 19] = 0;
+        patch[5 * 20 + 7] = 3;
+        canvas.applyPacket(0, packet(1, 10, 10, 20, 20, patch), canvas.beginFrame());
+
+        assertEquals(3, canvas.takeChangedPixels());
+        assertEquals(20 * 20, canvas.takeChangedBytes());
+        assertEquals(2, canvas.transparentPixels(0));
+    }
+
+    @Test
     void fullAndPartialPacketsAreAppliedToTheRightPlace() {
         AnimationCanvas canvas = new AnimationCanvas(2);
         canvas.applyPacket(0, packet(7, 0, 0, 128, 128, filled(16384, 5)), canvas.beginFrame());
