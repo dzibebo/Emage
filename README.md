@@ -25,6 +25,7 @@ To display an image, place Item Frames on a wall in a rectangular grid. Look at 
 | `/emage remove`                            | Remove the grid and its files. (Requires creator or `emage.admin` permission) |
 | `/emage refresh`                           | Send again every picture and GIF around you (fixes a picture that did not load or looks glitchy; 15 s cooldown). |
 | `/emage reload`                            | Reload the configuration.                              |
+| `/emage fliptest [metadata\|equipment] [index]` | Experiment (`emage.admin`): shows a red/white test pattern in the item frame you look at for 3 seconds, to check how a client switches a frame's map. |
 | `/emage debug`                             | Show the plugin version, limits, every player's send rate / queue / measured ping, and every animated GIF with who watches it. The full report with every detail is also saved to `plugins/Emage/debug/report-<time>.txt` (`emage.admin`). |
 
 ## How pictures reach players

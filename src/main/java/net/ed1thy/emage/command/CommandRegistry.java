@@ -168,6 +168,19 @@ public class CommandRegistry {
                 })
         );
 
+        commandManager.command(builder.literal("fliptest")
+                .permission("emage.admin")
+                .optional("method", StringParser.stringParser())
+                .optional("index", IntegerParser.integerParser())
+                .handler(ctx -> {
+                    if (!(ctx.sender().getSender() instanceof Player player)) {
+                        messageManager.sendOnlyPlayers(ctx.sender().getSender());
+                        return;
+                    }
+                    runFlipTest(player, ctx.getOrDefault("method", "metadata"), ctx.getOrDefault("index", 8));
+                })
+        );
+
         commandManager.command(builder.literal("refresh")
                 .handler(ctx -> {
                     if (!(ctx.sender().getSender() instanceof Player player)) {
@@ -700,6 +713,95 @@ public class CommandRegistry {
         } finally {
             decrementTask.run();
         }
+    }
+
+    /**
+     * Experiment for a future "show a whole GIF frame at once" mode: sends a red/white pattern into a spare map id and then
+     * switches the item frame the admin looks at to that map for three seconds, with the given method.
+     */
+    private void runFlipTest(Player player, String method, int metadataIndex) {
+        net.kyori.adventure.text.Component prefix = net.kyori.adventure.text.Component.text("Emage fliptest: ");
+        Entity target = player.getTargetEntity(8);
+        if (!(target instanceof ItemFrame frame)) {
+            player.sendMessage(prefix.append(net.kyori.adventure.text.Component.text("посмотрите на рамку с картинкой (ближе 8 блоков) и повторите команду")));
+            return;
+        }
+        ItemStack realItem = frame.getItem();
+        if (!(realItem.getItemMeta() instanceof MapMeta realMeta) || !realMeta.hasMapId()) {
+            player.sendMessage(prefix.append(net.kyori.adventure.text.Component.text("в этой рамке нет карты")));
+            return;
+        }
+        com.github.retrooper.packetevents.protocol.player.User user = com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().getUser(player);
+        if (user == null) {
+            player.sendMessage(prefix.append(net.kyori.adventure.text.Component.text("игрок не найден в PacketEvents")));
+            return;
+        }
+        boolean equipmentMethod = method.equalsIgnoreCase("equipment");
+        int spareId = realMeta.getMapId() | 0x20000000;
+        int entityId = frame.getEntityId();
+
+        io.netty.buffer.ByteBuf pattern = io.netty.buffer.Unpooled.buffer();
+        int id = spareId;
+        while ((id & -128) != 0) {
+            pattern.writeByte(id & 127 | 128);
+            id >>>= 7;
+        }
+        pattern.writeByte(id);
+        pattern.writeByte(0);
+        pattern.writeBoolean(true);
+        pattern.writeBoolean(false);
+        pattern.writeByte(128);
+        pattern.writeByte(128);
+        pattern.writeByte(0);
+        pattern.writeByte(0);
+        pattern.writeByte(0x80);
+        pattern.writeByte(0x80);
+        pattern.writeByte(0x01);
+        for (int y = 0; y < 128; y++) {
+            for (int x = 0; x < 128; x++) {
+                pattern.writeByte(((x / 16) + (y / 16)) % 2 == 0 ? 18 : 34);
+            }
+        }
+        net.ed1thy.emage.model.DeltaFrame delta = new net.ed1thy.emage.model.DeltaFrame(0, spareId, pattern);
+        com.github.retrooper.packetevents.wrapper.PacketWrapper<?> patternPacket = packetSender.createMapPacket(delta);
+        pattern.release();
+        if (patternPacket == null) {
+            player.sendMessage(prefix.append(net.kyori.adventure.text.Component.text("не удалось подготовить тестовую картинку")));
+            return;
+        }
+        user.sendPacket(patternPacket);
+
+        ItemStack spareBukkit = new ItemStack(Material.FILLED_MAP);
+        if (spareBukkit.getItemMeta() instanceof MapMeta spareMeta) {
+            spareMeta.setMapId(spareId);
+            spareBukkit.setItemMeta(spareMeta);
+        }
+        com.github.retrooper.packetevents.protocol.item.ItemStack spareItem = SpigotConversionUtil.fromBukkitItemStack(spareBukkit);
+        com.github.retrooper.packetevents.protocol.item.ItemStack realPeItem = SpigotConversionUtil.fromBukkitItemStack(realItem);
+
+        player.sendMessage(prefix.append(net.kyori.adventure.text.Component.text("через секунду картинка в этой рамке на 3 секунды заменится красно-белой шахматкой, потом вернётся. Метод: "
+                + (equipmentMethod ? "equipment" : "metadata (индекс " + metadataIndex + ")") + ". Если шахматка не появилась, так и напишите.")));
+
+        Runnable flipToSpare = () -> user.sendPacket(flipPacket(entityId, spareItem, equipmentMethod, metadataIndex));
+        Runnable flipBack = () -> {
+            user.sendPacket(flipPacket(entityId, realPeItem, equipmentMethod, metadataIndex));
+            player.sendMessage(prefix.append(net.kyori.adventure.text.Component.text("готово, картинка возвращена")));
+        };
+        Bukkit.getScheduler().runTaskLater(plugin, flipToSpare, 20L);
+        Bukkit.getScheduler().runTaskLater(plugin, flipBack, 80L);
+    }
+
+    private static com.github.retrooper.packetevents.wrapper.PacketWrapper<?> flipPacket(int entityId, com.github.retrooper.packetevents.protocol.item.ItemStack item,
+                                                                                           boolean equipment, int metadataIndex) {
+        if (equipment) {
+            return new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityEquipment(entityId,
+                    java.util.Collections.singletonList(new com.github.retrooper.packetevents.protocol.player.Equipment(
+                            com.github.retrooper.packetevents.protocol.player.EquipmentSlot.MAIN_HAND, item)));
+        }
+        java.util.List<com.github.retrooper.packetevents.protocol.entity.data.EntityData<?>> data = new java.util.ArrayList<>();
+        data.add(new com.github.retrooper.packetevents.protocol.entity.data.EntityData<>(metadataIndex,
+                com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes.ITEMSTACK, item));
+        return new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata(entityId, data);
     }
 
     private String writeDebugDump(java.util.List<String> lines) {
