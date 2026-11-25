@@ -30,7 +30,7 @@ final class PlayerSendQueue {
     private static final int PROBE_ID_BASE = 0x4D450000;
     private static final int PROBE_ID_MASK = 0xFFFF0000;
 
-    private static final int MAX_PACKETS_PER_FLUSH = 256;
+    private static final int MAX_PACKETS_PER_FLUSH = 1024;
     private static final double BURST_SECONDS = 0.04;
     private static final double BAND_SECONDS = 0.03;
     private static final int MIN_BAND_BYTES = 1536;

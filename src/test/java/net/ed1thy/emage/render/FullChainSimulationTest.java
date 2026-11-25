@@ -137,9 +137,10 @@ class FullChainSimulationTest {
             return true;
         }
 
+        private final AnimationCanvas scratch = new AnimationCanvas(1);
+
         private void decode(DeltaFrame source) {
             ByteBuf buf = source.packetBuf();
-            AnimationCanvas scratch = new AnimationCanvas(1);
             if (!scratch.applyPacket(0, buf, 1)) return;
             int p = buf.readerIndex();
             while ((buf.getByte(p++) & 0x80) != 0) {
@@ -617,6 +618,7 @@ class FullChainSimulationTest {
     private double lastMosaicFraction;
     private int lastMostBigFramesInFlight;
     private boolean testAdmission;
+    private boolean testSparse;
     private int testMaxRate = MAX_RATE;
     private int lastFrozenAtEnd;
     private double testExtraFrom = Double.MAX_VALUE;
@@ -638,7 +640,7 @@ class FullChainSimulationTest {
         List<Integer> firstMaps = new ArrayList<>();
         for (int g = 0; g < gifCount; g++) {
             int base = (idBase + g) * 100;
-            gifs.add(buildGif(idBase + g, base, mapsPerGif, frames, deltaSize, 50));
+            gifs.add(testSparse ? buildSparseGif(idBase + g, base, mapsPerGif, frames, 50) : buildGif(idBase + g, base, mapsPerGif, frames, deltaSize, 50));
             firstMaps.add(base);
         }
         PlayerSendQueue queue = new PlayerSendQueue(new PlayerSendQueue.Tuning(MIN_RATE, maxRate, 98_304, targetMs, true));
@@ -1035,6 +1037,90 @@ class FullChainSimulationTest {
             assertTrue(o.delivered() >= 8, "pictures must keep arriving on a very slow link: " + o.delivered());
             wall.cleanup();
             groupId++;
+        }
+    }
+
+    /**
+     * A GIF the way real ones are stored: per frame one bounding box around the few things that moved (here three blobs),
+     * the rest of the box is unchanged picture.
+     */
+    private SyncGroup buildSparseGif(int groupId, int mapBase, int maps, int frames, int delayMs) throws Exception {
+        FlatFileStorage storage = new FlatFileStorage(new File(dir, "g" + groupId), executor);
+        byte[][] state = new byte[maps][16384];
+        byte[][] background = new byte[maps][];
+        for (int m = 0; m < maps; m++) {
+            java.util.Arrays.fill(state[m], (byte) (50 + (m % 50)));
+            background[m] = state[m].clone();
+        }
+        for (int frame = 0; frame < frames; frame++) {
+            Map<Integer, MapFrameUpdate> updates = new HashMap<>();
+            for (int m = 0; m < maps; m++) {
+                if (frame == 0) {
+                    updates.put(mapBase + m, AnimationDistributionTest.update(0, mapBase + m, 0, 0, 128, 128, 50 + (m % 50)));
+                    continue;
+                }
+                byte[] before = state[m].clone();
+                state[m] = background[m].clone();
+                int[][] blobs = {{6 + (frame * 5 + m * 3) % 36, 8, 18, 14}, {72, 60 + (frame * 3 + m) % 40, 20, 16}, {30 + (frame * 7) % 50, 100, 14, 14}};
+                for (int[] blob : blobs) {
+                    for (int yy = blob[1]; yy < Math.min(128, blob[1] + blob[3]); yy++) {
+                        for (int xx = blob[0]; xx < Math.min(128, blob[0] + blob[2]); xx++) state[m][yy * 128 + xx] = (byte) (10 + frame);
+                    }
+                }
+                int minX = 128, minY = 128, maxX = -1, maxY = -1;
+                for (int i = 0; i < 16384; i++) {
+                    if (before[i] == state[m][i]) continue;
+                    minX = Math.min(minX, i % 128);
+                    maxX = Math.max(maxX, i % 128);
+                    minY = Math.min(minY, i / 128);
+                    maxY = Math.max(maxY, i / 128);
+                }
+                if (maxX < 0) continue;
+                int w = maxX - minX + 1;
+                int h = maxY - minY + 1;
+                byte[] data = new byte[w * h];
+                for (int yy = 0; yy < h; yy++) System.arraycopy(state[m], (minY + yy) * 128 + minX, data, yy * w, w);
+                updates.put(mapBase + m, AnimationDistributionTest.updateWithData(frame, mapBase + m, minX, minY, w, h, data));
+            }
+            storage.saveBundledFrame(groupId, frame, updates);
+            for (MapFrameUpdate update : updates.values()) update.freeMemory();
+        }
+        UUID worldId = UUID.randomUUID();
+        List<FrameNode> nodes = new CopyOnWriteArrayList<>();
+        for (int m = 0; m < maps; m++) nodes.add(new FrameNode(m, UUID.randomUUID(), worldId, 0, 0, m, 64, 0, mapBase + m, null));
+        MapMetadata meta = new MapMetadata(groupId, UUID.randomUUID(), "http://x/sparse.gif", maps, 1, frames, delayMs);
+        SyncGroup group = new SyncGroup(meta, nodes, storage, cache, executor, null, 96.0);
+        group.setViewerStateForTesting(viewer, true, true);
+        long deadline = System.currentTimeMillis() + 15_000;
+        while (!group.baseLoadedForTesting() && System.currentTimeMillis() < deadline) Thread.sleep(5);
+        return group;
+    }
+
+    @Test
+    void sparseGifsSentAsSmallRectanglesPlayFasterOnTheSameLinkWithoutMorePing() throws Exception {
+        double[][] links = {{500_000, 0.25}, {3_000_000, 0.10}, {12_500_000, 0.04}};
+        int idBase = 3100;
+        testSparse = true;
+        try {
+            for (double[] link : links) {
+                MapRects.enabled = false;
+                ClusterResult off = runGifCluster(6, 16, 0, 12, link[0], link[1], 0.01, TARGET_DELAY_MS, 18, idBase, MAX_RATE);
+                double offPing = lastLateP95;
+                idBase += 20;
+                MapRects.enabled = true;
+                ClusterResult on = runGifCluster(6, 16, 0, 12, link[0], link[1], 0.01, TARGET_DELAY_MS, 18, idBase, MAX_RATE);
+                double onPing = lastLateP95;
+                idBase += 20;
+                System.out.printf("SPARSE link %5.1f MB/s: bounding boxes %.1f gifs frames/s at %.0f KB/s, ping p95 %.0f ms; small rectangles %.1f frames/s at %.0f KB/s, ping p95 %.0f ms%n",
+                        link[0] / 1e6, off.averageFps(), off.kbPerSecond(), offPing * 1000, on.averageFps(), on.kbPerSecond(), onPing * 1000);
+                if (link[0] <= 3_000_000) {
+                    assertTrue(on.averageFps() >= off.averageFps() * 1.5, "small rectangles must make a bandwidth-limited link carry clearly more frames: " + on.averageFps() + " vs " + off.averageFps());
+                }
+                assertTrue(onPing <= Math.max(offPing + 0.03, 0.13), "small rectangles must not raise the added ping (a fully used slow link sits near 100 ms): " + onPing + " vs " + offPing);
+            }
+        } finally {
+            testSparse = false;
+            MapRects.enabled = true;
         }
     }
 

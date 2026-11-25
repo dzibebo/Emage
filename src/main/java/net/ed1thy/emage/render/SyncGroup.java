@@ -104,6 +104,7 @@ public class SyncGroup {
     private final Map<UUID, Long> batchProgressMillis = new ConcurrentHashMap<>();
     private volatile double frameBytesEwma;
     private volatile double framePixelsEwma;
+    private volatile double sparseRatio = 0.6;
     private final Map<UUID, Long> batchStartMillis = new ConcurrentHashMap<>();
     private volatile long clockStalls;
     private volatile int clockWaitingFrame = -1;
@@ -341,8 +342,8 @@ public class SyncGroup {
     }
 
     public double demandBytesPerSecond() {
-        double perFrame = frameBytesEwma;
-        if (perFrame <= 0) perFrame = nodes.size() * (double) AnimationCanvas.MAP_BYTES * 0.5;
+        double perFrame = frameBytesEwma * sparseRatio;
+        if (frameBytesEwma <= 0) perFrame = nodes.size() * (double) AnimationCanvas.MAP_BYTES * 0.5 * sparseRatio;
         return perFrame * 1000.0 / Math.max(20, metadata.delayMs());
     }
 
@@ -822,7 +823,46 @@ public class SyncGroup {
         return divisor == 1 || (clockTicks + (uuid.hashCode() & 7)) % divisor == 0;
     }
 
-    private record Pending(int index, int[] box, double score) {}
+    private static final class Pending {
+        final int index;
+        final int[] box;
+        final double score;
+        final long boxBytes;
+        int[][] rects;
+        long bytes;
+
+        Pending(int index, int[] box, double score) {
+            this.index = index;
+            this.box = box;
+            this.score = score;
+            this.rects = new int[][]{box};
+            this.boxBytes = AnimationCanvas.packetBytes(box);
+            this.bytes = this.boxBytes;
+        }
+
+        double score() {
+            return score;
+        }
+    }
+
+    /** Works out the few rectangles each map really needs (instead of one big bounding box) and keeps the saving for the demand estimate. */
+    private void sparsify(AnimationCanvas current, List<Pending> diffs, int[] seqs) {
+        long boxSum = 0;
+        long sparseSum = 0;
+        for (Pending pending : diffs) {
+            AnimationCanvas.Diff diff = current.diffRects(pending.index, seqs[pending.index]);
+            if (diff != null) {
+                pending.rects = diff.rects();
+                pending.bytes = AnimationCanvas.packetBytes(diff.rects());
+            }
+            boxSum += pending.boxBytes;
+            sparseSum += pending.bytes;
+        }
+        if (boxSum > 0) {
+            double ratio = Math.max(0.02, Math.min(1.0, (double) sparseSum / boxSum));
+            sparseRatio = sparseRatio * 0.9 + ratio * 0.1;
+        }
+    }
 
     private void serveViewer(UUID uuid, AnimationCanvas current, FrameSink sink, boolean animating) {
         int count = current.count();
@@ -867,6 +907,7 @@ public class SyncGroup {
 
         List<Pending> diffs = null;
         List<Pending> fulls = null;
+        long boxTotal = 0;
         int latestSeq = current.seq();
         for (int i = 0; i < count; i++) {
             if (seqs[i] < 0) {
@@ -877,7 +918,9 @@ public class SyncGroup {
                 if (box != null) {
                     if (diffs == null) diffs = new ArrayList<>();
                     double stale = 1.0 + Math.max(0, latestSeq - seqs[i]);
-                    diffs.add(new Pending(i, box, scatterOrder ? scatterKey(view, frameNodes.get(i), i, latestSeq) : score(view, frameNodes.get(i)) / stale));
+                    Pending pending = new Pending(i, box, scatterOrder ? scatterKey(view, frameNodes.get(i), i, latestSeq) : score(view, frameNodes.get(i)) / stale);
+                    boxTotal += pending.boxBytes;
+                    diffs.add(pending);
                 }
             }
         }
@@ -885,7 +928,12 @@ public class SyncGroup {
         if (fulls != null || diffs != null) {
             long fullBudget = fulls != null ? sink.animationFullBudget(uuid, !animating) : 0;
             long allowance = Math.max(budget - spent, fullBudget);
-            if (allowance > 0) {
+            if (allowance > 0 && fulls == null && boxTotal > allowance && boxTotal > SMALL_BATCH_BYTES && !burstAvailable(uuid)) {
+                // another big frame is still on its way to this player: do not even work out what this one needs, wait for it
+                diffs = null;
+            }
+            if (allowance > 0 && (fulls != null || diffs != null)) {
+                if (diffs != null) sparsify(current, diffs, seqs);
                 List<Pending> ordered = new ArrayList<>();
                 long total = 0;
                 if (fulls != null) {
@@ -897,16 +945,20 @@ public class SyncGroup {
                     diffs.sort(Comparator.comparingDouble(Pending::score));
                     ordered.addAll(diffs);
                     for (Pending pending : diffs) {
-                        total += AnimationCanvas.packetBytes(pending.box());
+                        total += pending.bytes;
                     }
                 }
                 if (total <= allowance) {
                     for (Pending pending : ordered) {
                         long bytes = sendCanvasMap(uuid, current, pending, seqs, sentMaps, sink);
-                        if (bytes == 0) break;
+                        if (bytes <= 0) {
+                            spent -= bytes;
+                            charge -= bytes;
+                            break;
+                        }
                         spent += bytes;
                         charge += bytes;
-                        packets++;
+                        packets += pending.rects.length;
                     }
                     if (diffs != null && packets > 0) recordFrame(uuid, 0L);
                 } else if (total > SMALL_BATCH_BYTES && !claimBurst(uuid)) {
@@ -915,11 +967,13 @@ public class SyncGroup {
                     java.util.concurrent.ConcurrentLinkedDeque<BatchItem> fresh = new java.util.concurrent.ConcurrentLinkedDeque<>();
                     int[] ids = canvasMapIds;
                     for (Pending pending : ordered) {
-                        if (pending.index() >= ids.length) continue;
-                        int mapId = ids[pending.index()];
-                        io.netty.buffer.ByteBuf buf = current.buildPacket(pending.index(), mapId, pending.box());
-                        fresh.add(new BatchItem(pending.index(), mapId, seqs[pending.index()], buf, AnimationCanvas.packetBytes(pending.box())));
-                        seqs[pending.index()] = latestSeq;
+                        if (pending.index >= ids.length) continue;
+                        int mapId = ids[pending.index];
+                        for (int[] rect : pending.rects) {
+                            io.netty.buffer.ByteBuf buf = current.buildPacket(pending.index, mapId, rect);
+                            fresh.add(new BatchItem(pending.index, mapId, seqs[pending.index], buf, AnimationCanvas.packetBytes(rect)));
+                        }
+                        seqs[pending.index] = latestSeq;
                     }
                     batches.put(uuid, fresh);
                     batchProgressMillis.put(uuid, tickNowMillis);
@@ -967,19 +1021,31 @@ public class SyncGroup {
         return batch != null && !batch.isEmpty();
     }
 
-    private boolean claimBurst(UUID uuid) {
+    private boolean burstAvailable(UUID uuid) {
         BurstClaim claim = BURST_OWNERS.get(uuid);
-        if (claim != null && claim.owner() != this) {
-            SyncGroup owner = claim.owner();
-            // the owner only blocks the others while it is really still serving this player; a player who walked away
-            // from it, or a frame that has not moved for a very long time, must not hold everybody else back
-            if (owner.hasOpenBatch(uuid) && owner.inRangePlayers.contains(uuid)) {
-                Long progress = owner.batchProgressMillis.get(uuid);
-                if (progress == null || tickNowMillis - progress < CLAIM_STALE_MILLIS) return false;
-            }
+        if (claim == null || claim.owner() == this) return true;
+        SyncGroup owner = claim.owner();
+        // the owner only blocks the others while it is really still serving this player; a player who walked away
+        // from it, or a frame that has not moved for a very long time, must not hold everybody else back
+        if (owner.hasOpenBatch(uuid) && owner.inRangePlayers.contains(uuid)) {
+            Long progress = owner.batchProgressMillis.get(uuid);
+            if (progress == null || tickNowMillis - progress < CLAIM_STALE_MILLIS) return false;
         }
+        return true;
+    }
+
+    private boolean claimBurst(UUID uuid) {
+        if (!burstAvailable(uuid)) return false;
         BURST_OWNERS.put(uuid, new BurstClaim(this));
         return true;
+    }
+
+    /** True while a frame of any viewer is still on its way; such a group is served first so its frame is finished quickly. */
+    boolean hasOpenBatches() {
+        for (java.util.concurrent.ConcurrentLinkedDeque<BatchItem> batch : batches.values()) {
+            if (!batch.isEmpty()) return true;
+        }
+        return false;
     }
 
     private long[] drainBatch(UUID uuid, java.util.concurrent.ConcurrentLinkedDeque<BatchItem> batch, Set<Integer> sentMaps,
@@ -1030,19 +1096,24 @@ public class SyncGroup {
         }
     }
 
+    /** @return the bytes queued, or minus that when only some of the map's rectangles could be queued (the map then stays pending) */
     private long sendCanvasMap(UUID uuid, AnimationCanvas current, Pending pending, int[] seqs,
                                Set<Integer> sentMaps, FrameSink sink) {
         int[] ids = canvasMapIds;
-        if (pending.index() >= ids.length) return 0;
-        int mapId = ids[pending.index()];
-        io.netty.buffer.ByteBuf buf = current.buildPacket(pending.index(), mapId, pending.box());
-        MapFrameUpdate update = new MapFrameUpdate(new DeltaFrame[]{new DeltaFrame(1, mapId, buf)});
-        boolean queued = sink.enqueueUpdate(uuid, update, PlayerSendQueue.TIER_ANIMATION);
-        update.freeMemory();
-        if (!queued) return 0;
-        seqs[pending.index()] = current.seq();
+        if (pending.index >= ids.length) return 0;
+        int mapId = ids[pending.index];
+        long bytes = 0;
+        for (int[] rect : pending.rects) {
+            io.netty.buffer.ByteBuf buf = current.buildPacket(pending.index, mapId, rect);
+            MapFrameUpdate update = new MapFrameUpdate(new DeltaFrame[]{new DeltaFrame(1, mapId, buf)});
+            boolean queued = sink.enqueueUpdate(uuid, update, PlayerSendQueue.TIER_ANIMATION);
+            update.freeMemory();
+            if (!queued) return -bytes;
+            bytes += AnimationCanvas.packetBytes(rect);
+        }
+        seqs[pending.index] = current.seq();
         sentMaps.add(mapId);
-        return AnimationCanvas.packetBytes(pending.box());
+        return bytes;
     }
 
     private Set<Integer> sentMapsOf(UUID uuid) {
@@ -1278,7 +1349,8 @@ public class SyncGroup {
             sb.append(", clock stalls ").append(clockStalls);
             sb.append(String.format(", changed data per frame %.0f KB (%.1f MB/s at original speed)", frameBytes / 1024.0, demand / (1024.0 * 1024.0)));
             if (frameBytes > 0) {
-                sb.append(String.format(", of which really changed pixels %.0f KB (%.0f%%)", framePixelsEwma / 1024.0, 100.0 * framePixelsEwma / frameBytes));
+                sb.append(String.format(", of which really changed pixels %.0f KB (%.0f%%), sent as small rectangles it costs %.0f%% of the bounding boxes",
+                        framePixelsEwma / 1024.0, 100.0 * framePixelsEwma / frameBytes, 100.0 * sparseRatio));
             }
         }
         AnimationCanvas current = canvas;

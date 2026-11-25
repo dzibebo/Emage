@@ -175,7 +175,8 @@ public class RenderManager implements FrameSink {
             processSpoofs();
 
             List<SyncGroup> groups = new ArrayList<>(activeGroups.values());
-            groups.sort(java.util.Comparator.comparingDouble(g -> g.servedScore(currentTime)));
+            groups.sort(java.util.Comparator.<SyncGroup>comparingInt(g -> g.hasOpenBatches() ? 0 : 1)
+                    .thenComparingDouble(g -> g.servedScore(currentTime)));
             for (SyncGroup group : groups) {
                 try {
                     if (group.shouldTick(currentTime)) {

@@ -85,6 +85,31 @@ class AnimationDistributionTest {
         return new MapFrameUpdate(new DeltaFrame[]{new DeltaFrame(frame, mapId, buf)});
     }
 
+    static MapFrameUpdate updateWithData(int frame, int mapId, int x, int z, int width, int height, byte[] data) {
+        ByteBuf buf = Unpooled.buffer();
+        int v = mapId;
+        while ((v & -128) != 0) {
+            buf.writeByte(v & 127 | 128);
+            v >>>= 7;
+        }
+        buf.writeByte(v);
+        buf.writeByte(0);
+        buf.writeBoolean(true);
+        buf.writeBoolean(false);
+        buf.writeByte(width);
+        buf.writeByte(height);
+        buf.writeByte(x);
+        buf.writeByte(z);
+        int length = width * height;
+        while ((length & -128) != 0) {
+            buf.writeByte(length & 127 | 128);
+            length >>>= 7;
+        }
+        buf.writeByte(length);
+        buf.writeBytes(data, 0, width * height);
+        return new MapFrameUpdate(new DeltaFrame[]{new DeltaFrame(frame, mapId, buf)});
+    }
+
     static MapFrameUpdate update(int frame, int mapId, int x, int z, int width, int height, int value) {
         return new MapFrameUpdate(new DeltaFrame[]{new DeltaFrame(frame, mapId, packetBuffer(mapId, x, z, width, height, value))});
     }

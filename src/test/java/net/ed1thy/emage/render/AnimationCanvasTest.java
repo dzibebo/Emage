@@ -64,6 +64,118 @@ class AnimationCanvasTest {
         }
     }
 
+    /** A frame the way the stored GIF frames look: a bounding box around a few scattered blobs, the rest of the box unchanged. */
+    private static void sparseFrame(AnimationCanvas canvas, int map, int mapId, Random random, int blobs) {
+        int w = 40 + random.nextInt(89);
+        int h = 40 + random.nextInt(89);
+        int x = random.nextInt(128 - w + 1);
+        int z = random.nextInt(128 - h + 1);
+        byte[] current = canvas.pixelsOf(map);
+        byte[] data = new byte[w * h];
+        for (int dy = 0; dy < h; dy++) System.arraycopy(current, (z + dy) * 128 + x, data, dy * w, w);
+        for (int b = 0; b < blobs; b++) {
+            int bw = 2 + random.nextInt(12);
+            int bh = 2 + random.nextInt(12);
+            int bx = random.nextInt(Math.max(1, w - bw));
+            int by = random.nextInt(Math.max(1, h - bh));
+            for (int yy = by; yy < Math.min(h, by + bh); yy++) {
+                for (int xx = bx; xx < Math.min(w, bx + bw); xx++) data[yy * w + xx] = (byte) (4 + random.nextInt(200));
+            }
+        }
+        canvas.applyPacket(map, packet(mapId, x, z, w, h, data), canvas.beginFrame());
+    }
+
+    @Test
+    void viewersWithAnyLagRebuildExactlyTheServerPictureFromSmallRectangles() {
+        Random random = new Random(21);
+        int maps = 3;
+        AnimationCanvas canvas = new AnimationCanvas(maps);
+        for (int m = 0; m < maps; m++) {
+            canvas.applyPacket(m, packet(100 + m, 0, 0, 128, 128, filled(16384, 10 + m)), canvas.beginFrame());
+        }
+        int[] lags = {1, 2, 5, 17, 60, 200};
+        byte[][][] clients = new byte[lags.length][maps][16384];
+        int[][] seqs = new int[lags.length][maps];
+        for (int v = 0; v < lags.length; v++) {
+            for (int m = 0; m < maps; m++) {
+                clients[v][m] = canvas.pixelsOf(m).clone();
+                seqs[v][m] = canvas.seq();
+            }
+        }
+        long sparseBytes = 0;
+        long boxBytes = 0;
+        for (int frame = 1; frame <= 600; frame++) {
+            for (int m = 0; m < maps; m++) {
+                if (random.nextInt(3) > 0) sparseFrame(canvas, m, 100 + m, random, 1 + random.nextInt(3));
+            }
+            for (int v = 0; v < lags.length; v++) {
+                if (frame % lags[v] != 0) continue;
+                for (int m = 0; m < maps; m++) {
+                    AnimationCanvas.Diff diff = canvas.diffRects(m, seqs[v][m]);
+                    if (diff == null) continue;
+                    boxBytes += diff.boxBytes();
+                    for (int[] rect : diff.rects()) {
+                        ByteBuf update = canvas.buildPacket(m, 100 + m, rect);
+                        sparseBytes += update.readableBytes() + 3;
+                        applyToClient(clients[v][m], update);
+                        update.release();
+                    }
+                    seqs[v][m] = canvas.seq();
+                }
+            }
+        }
+        for (int v = 0; v < lags.length; v++) {
+            for (int m = 0; m < maps; m++) {
+                AnimationCanvas.Diff diff = canvas.diffRects(m, seqs[v][m]);
+                if (diff != null) {
+                    for (int[] rect : diff.rects()) {
+                        ByteBuf update = canvas.buildPacket(m, 100 + m, rect);
+                        applyToClient(clients[v][m], update);
+                        update.release();
+                    }
+                }
+                assertArrayEquals(canvas.pixelsOf(m), clients[v][m], "viewer " + v + " (syncs every " + lags[v] + " frames) must end up identical to the server");
+            }
+        }
+        System.out.printf("RECTS sparse blobs inside bounding boxes: %d KB sent as rectangles instead of %d KB (%.0f%%)%n",
+                sparseBytes / 1024, boxBytes / 1024, 100.0 * sparseBytes / boxBytes);
+        assertTrue(sparseBytes < boxBytes * 0.7, "small rectangles must beat the bounding boxes for scattered blobs: " + sparseBytes + " vs " + boxBytes);
+    }
+
+    @Test
+    void workingOutSmallRectanglesIsCheap() {
+        Random random = new Random(5);
+        int maps = 256;
+        AnimationCanvas canvas = new AnimationCanvas(maps);
+        for (int m = 0; m < maps; m++) {
+            canvas.applyPacket(m, packet(100 + m, 0, 0, 128, 128, filled(16384, 10)), canvas.beginFrame());
+        }
+        int[] seqs = new int[maps];
+        java.util.Arrays.fill(seqs, canvas.seq());
+        long applyNanos = 0;
+        long diffNanos = 0;
+        long rectCount = 0;
+        long calls = 0;
+        for (int frame = 0; frame < 60; frame++) {
+            long t0 = System.nanoTime();
+            for (int m = 0; m < maps; m++) sparseFrame(canvas, m, 100 + m, random, 3);
+            applyNanos += System.nanoTime() - t0;
+            if (frame % 3 == 2) {
+                long t1 = System.nanoTime();
+                for (int m = 0; m < maps; m++) {
+                    AnimationCanvas.Diff diff = canvas.diffRects(m, seqs[m]);
+                    if (diff != null) rectCount += diff.rects().length;
+                    seqs[m] = canvas.seq();
+                    calls++;
+                }
+                diffNanos += System.nanoTime() - t1;
+            }
+        }
+        System.out.printf("RECTS cost: applying a stored frame %.1f us per map, working out the rectangles %.1f us per map (%.1f rectangles on average)%n",
+                applyNanos / 1000.0 / (60.0 * maps), diffNanos / 1000.0 / calls, rectCount / (double) calls);
+        assertTrue(diffNanos / 1000.0 / calls < 200, "working out the rectangles must stay cheap");
+    }
+
     @Test
     void theCanvasCountsReallyChangedPixelsApartFromTheirBoundingBoxAndTransparentOnes() {
         AnimationCanvas canvas = new AnimationCanvas(1);

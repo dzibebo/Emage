@@ -34,20 +34,22 @@ every player is sent exactly the map data they need, never faster than their con
 - Every player has their own sender that keeps a tiny ping packet running through the same connection while pictures are
   transferred and slows down as soon as Emage's own traffic makes that player wait (`performance.target-queue-delay-ms`).
   The default target is 20 ms, short random spikes (VPN, far-away players) are filtered out, and the speed follows the
-  player's real connection up to 16 MB/s (`performance.max-bytes-per-second-per-player`), so a fast connection gets big GIFs
+  player's real connection up to 64 MB/s (`performance.max-bytes-per-second-per-player`), so a fast connection gets big GIFs
   at full speed and a slow or distant one gets what fits without its ping going up. The whole server is capped too
   (`performance.max-total-bytes-per-second`).
 - Still pictures are sent on demand: nearest and most-looked-at maps first.
 - A GIF is not a video stream with a fixed schedule. The server keeps the current state of every GIF and sends each player only
   the part that changed since the last thing they received. A weak connection or a busy client simply gets fewer frames per
   second, but always up-to-date ones; nothing ever has to wait for the loop to start over.
+- A GIF is sent as what really changed: the bounding box of the changes in a map is often several times bigger than the
+  changed pixels themselves, so when that saves at least 30% the update goes out as a few small rectangles instead of one big one.
 - A big GIF frame is sent as one quick burst and then stays whole until its next turn: only one big frame at a time is on its
   way to a player, so a big GIF is never a slow patchwork of two moments, and a paused GIF never stays half updated.
 - GIFs animate for players who are close (`performance.animated-view-distance-blocks`, 48 blocks by default, measured to the
   nearest frame of the picture) and look towards them; farther GIFs update less often. Far away they show a still frame at no cost.
 - A player's game rebuilds a whole map texture on every map update, so it can only digest a limited number of updates per
   second. When the visible GIFs together need more than the player's budget (`performance.max-bytes-per-second-per-player`,
-  16 MB/s by default), Emage animates the GIF the player is looking at and the cheapest ones, and pauses the rest on their
+  64 MB/s by default), Emage animates the GIF the player is looking at and the cheapest ones, and pauses the rest on their
   current frame, instead of making all of them stutter and raising the ping (`performance.limit-animated-gifs`). `/emage debug`
   shows how many GIFs animate for each player and which ones are paused.
 - A GIF in which no frame changes is treated as a still picture, exactly like a PNG/JPG.

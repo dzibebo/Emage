@@ -1,4 +1,4 @@
-config-version: 7
+config-version: 8
 
 performance:
   max-packets-per-tick: 64
@@ -8,12 +8,12 @@ performance:
   animated-view-distance-blocks: 48
   # Map data is sent to each player through an adaptive limiter so slow connections are not flooded
   # (a flooded connection makes ping explode and can time the player out).
-  # Default 16 MB/s (raw map data, before the proxy compresses it). It is only an upper bound: the speed still follows each
+  # Default 64 MB/s (raw map data, before the proxy compresses it). It is only an upper bound: the speed still follows each
   # player's real connection and drops as soon as that player's ping rises, so slow connections and weak PCs are not affected.
   # The speed starts low, grows quickly and then follows each player's real connection: it backs off by itself as soon
   # as the player's ping starts to rise. These are only the outer bounds (bytes per second), so the maximum can be
   # generous: a player on a fast connection gets big gifs at full speed, a player on a weak one gets what fits.
-  max-bytes-per-second-per-player: 16777216
+  max-bytes-per-second-per-player: 67108864
   # Hard cap for all players together (bytes per second). Encoding and compressing map packets costs CPU on the
   # network threads, so even many players joining at once cannot starve everyone else's connection.
   max-total-bytes-per-second: 67108864
