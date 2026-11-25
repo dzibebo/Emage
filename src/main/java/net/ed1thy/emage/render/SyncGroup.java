@@ -90,6 +90,18 @@ public class SyncGroup {
     private final Map<UUID, java.util.concurrent.ConcurrentLinkedDeque<BatchItem>> batches = new ConcurrentHashMap<>();
 
     private record BatchItem(int index, int mapId, int prevSeq, io.netty.buffer.ByteBuf buf, int bytes) {}
+
+    /**
+     * Only one big frame at a time may be on its way to a player. Several big frames sent side by side would all be
+     * half way for the whole time (the picture is then a patchwork of two moments, always), while one after the other each
+     * of them arrives in a short burst and then stays whole until its next turn.
+     */
+    private static final Map<UUID, BurstClaim> BURST_OWNERS = new ConcurrentHashMap<>();
+    private static final long SMALL_BATCH_BYTES = 192L * 1024;
+    private static final long CLAIM_STALE_MILLIS = 15_000;
+
+    private record BurstClaim(SyncGroup owner) {}
+    private final Map<UUID, Long> batchProgressMillis = new ConcurrentHashMap<>();
     private volatile double frameBytesEwma;
     private volatile long clockStalls;
     private volatile int clockWaitingFrame = -1;
@@ -337,7 +349,7 @@ public class SyncGroup {
         if (throttle == null) return Long.MAX_VALUE;
         long now = tickNowMillis;
         if (throttle[2] != 0) {
-            double elapsed = Math.max(0L, Math.min(500L, now - (long) throttle[2]));
+            double elapsed = Math.max(0L, Math.min(3000L, now - (long) throttle[2]));
             throttle[1] = Math.min(throttle[1] + throttle[0] * elapsed / 1000.0, throttle[0] * 0.3 + 32768);
         }
         throttle[2] = now;
@@ -441,6 +453,8 @@ public class SyncGroup {
         visiblePlayers.remove(uuid);
         animRangePlayers.remove(uuid);
         releaseBatch(uuid);
+        BURST_OWNERS.computeIfPresent(uuid, (k, claim) -> claim.owner() == this ? null : claim);
+        batchProgressMillis.remove(uuid);
         frozenViewers.remove(uuid);
         throttles.remove(uuid);
         viewerSeq.remove(uuid);
@@ -798,12 +812,13 @@ public class SyncGroup {
             viewerSeq.put(uuid, seqs);
         }
 
+        long allowedBytes = throttleAllowed(uuid);
         long budget = sink.animationBudget(uuid);
         if (budget <= 0 && sink.animationFullBudget(uuid, !animating) <= 0) return;
 
-        long allowedBytes = throttleAllowed(uuid);
         Set<Integer> sentMaps = sentMapsOf(uuid);
         long spent = 0;
+        long charge = 0;
         int packets = 0;
 
         java.util.concurrent.ConcurrentLinkedDeque<BatchItem> batch = batches.get(uuid);
@@ -811,10 +826,11 @@ public class SyncGroup {
             if (batch.isEmpty()) {
                 batches.remove(uuid, batch);
                 batch = null;
-            } else if (budget > 0 && allowedBytes > 0) {
-                long[] done = drainBatch(uuid, batch, sentMaps, sink, Math.min(budget, allowedBytes));
+            } else if (budget > 0) {
+                long[] done = drainBatch(uuid, batch, sentMaps, sink, budget);
                 spent += done[0];
                 packets += (int) done[1];
+                if (done[0] > 0) batchProgressMillis.put(uuid, tickNowMillis);
                 if (batch.isEmpty()) batches.remove(uuid, batch);
             }
         }
@@ -822,7 +838,7 @@ public class SyncGroup {
 
         List<FrameNode> frameNodes = canvasNodes;
         double[] view = playerViews.get(uuid);
-        boolean diffsDue = animating && !batchActive && !frozenViewers.contains(uuid) && budget - spent > 0 && allowedBytes - spent > 0 && cadenceDue(uuid, view);
+        boolean diffsDue = animating && !batchActive && !frozenViewers.contains(uuid) && budget - spent > 0 && allowedBytes > 0 && cadenceDue(uuid, view);
 
         List<Pending> diffs = null;
         List<Pending> fulls = null;
@@ -844,7 +860,6 @@ public class SyncGroup {
         if (fulls != null || diffs != null) {
             long fullBudget = fulls != null ? sink.animationFullBudget(uuid, !animating) : 0;
             long allowance = Math.max(budget - spent, fullBudget);
-            if (fulls == null) allowance = Math.min(allowance, allowedBytes - spent);
             if (allowance > 0) {
                 List<Pending> ordered = new ArrayList<>();
                 long total = 0;
@@ -865,8 +880,11 @@ public class SyncGroup {
                         long bytes = sendCanvasMap(uuid, current, pending, seqs, sentMaps, sink);
                         if (bytes == 0) break;
                         spent += bytes;
+                        charge += bytes;
                         packets++;
                     }
+                } else if (total > SMALL_BATCH_BYTES && !claimBurst(uuid)) {
+                    // another big frame is still on its way to this player: wait for it instead of starting a second half-sent one
                 } else {
                     java.util.concurrent.ConcurrentLinkedDeque<BatchItem> fresh = new java.util.concurrent.ConcurrentLinkedDeque<>();
                     int[] ids = canvasMapIds;
@@ -878,6 +896,8 @@ public class SyncGroup {
                         seqs[pending.index()] = latestSeq;
                     }
                     batches.put(uuid, fresh);
+                    batchProgressMillis.put(uuid, tickNowMillis);
+                    charge += total;
                     long[] done = drainBatch(uuid, fresh, sentMaps, sink, Math.max(1, allowance));
                     spent += done[0];
                     packets += (int) done[1];
@@ -888,8 +908,8 @@ public class SyncGroup {
         if (spent > 0) {
             recordServed(spent);
             recordViewer(uuid, spent, packets);
-            throttleSpend(uuid, spent);
         }
+        if (charge > 0) throttleSpend(uuid, charge);
         sink.spendAnimationBudget(uuid, spent);
     }
 
@@ -910,6 +930,26 @@ public class SyncGroup {
         h *= 0x2C1B3C6D;
         h ^= h >>> 12;
         return cls + ((h & 0x7FFFFFFF) / (double) 0x7FFFFFFF) * 0.99;
+    }
+
+    private boolean hasOpenBatch(UUID uuid) {
+        java.util.concurrent.ConcurrentLinkedDeque<BatchItem> batch = batches.get(uuid);
+        return batch != null && !batch.isEmpty();
+    }
+
+    private boolean claimBurst(UUID uuid) {
+        BurstClaim claim = BURST_OWNERS.get(uuid);
+        if (claim != null && claim.owner() != this) {
+            SyncGroup owner = claim.owner();
+            // the owner only blocks the others while it is really still serving this player; a player who walked away
+            // from it, or a frame that has not moved for a very long time, must not hold everybody else back
+            if (owner.hasOpenBatch(uuid) && owner.inRangePlayers.contains(uuid)) {
+                Long progress = owner.batchProgressMillis.get(uuid);
+                if (progress == null || tickNowMillis - progress < CLAIM_STALE_MILLIS) return false;
+            }
+        }
+        BURST_OWNERS.put(uuid, new BurstClaim(this));
+        return true;
     }
 
     private long[] drainBatch(UUID uuid, java.util.concurrent.ConcurrentLinkedDeque<BatchItem> batch, Set<Integer> sentMaps,
@@ -1042,6 +1082,17 @@ public class SyncGroup {
 
     public List<FrameNode> getNodes() {
         return nodes;
+    }
+
+    long openBatchBytesForTesting(UUID uuid) {
+        java.util.concurrent.ConcurrentLinkedDeque<BatchItem> batch = batches.get(uuid);
+        long bytes = 0;
+        if (batch != null) for (BatchItem item : batch) bytes += item.bytes();
+        return bytes;
+    }
+
+    static long smallBatchBytesForTesting() {
+        return SMALL_BATCH_BYTES;
     }
 
     void setViewerStateForTesting(UUID uuid, boolean inAnimationRange, boolean visible) {
@@ -1265,6 +1316,7 @@ public class SyncGroup {
 
     public void cleanup() {
         closed = true;
+        BURST_OWNERS.values().removeIf(claim -> claim.owner() == this);
         releaseFrames();
     }
 }

@@ -41,6 +41,8 @@ every player is sent exactly the map data they need, never faster than their con
 - A GIF is not a video stream with a fixed schedule. The server keeps the current state of every GIF and sends each player only
   the part that changed since the last thing they received. A weak connection or a busy client simply gets fewer frames per
   second, but always up-to-date ones; nothing ever has to wait for the loop to start over.
+- A big GIF frame is sent as one quick burst and then stays whole until its next turn: only one big frame at a time is on its
+  way to a player, so a big GIF is never a slow patchwork of two moments, and a paused GIF never stays half updated.
 - GIFs animate for players who are close (`performance.animated-view-distance-blocks`, 48 blocks by default, measured to the
   nearest frame of the picture) and look towards them; farther GIFs update less often. Far away they show a still frame at no cost.
 - A player's game rebuilds a whole map texture on every map update, so it can only digest a limited number of updates per

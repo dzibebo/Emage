@@ -612,7 +612,10 @@ class FullChainSimulationTest {
         for (SyncGroup group : groups) group.cleanup();
     }
 
+    private static final double MOSAIC_LIMIT = 0.2;
     private int lastMaxDistinct;
+    private double lastMosaicFraction;
+    private int lastMostBigFramesInFlight;
     private boolean testAdmission;
     private int testMaxRate = MAX_RATE;
     private int lastFrozenAtEnd;
@@ -754,6 +757,9 @@ class FullChainSimulationTest {
         List<List<Integer>> classMaps = new ArrayList<>();
         List<int[]> wholeMapGifs = new ArrayList<>();
         lastMaxDistinct = 0;
+        long mosaicSamples = 0;
+        lastMostBigFramesInFlight = 0;
+        long samplesTaken = 0;
         int groupId = idBase;
         for (int[] spec : specs) {
             List<Integer> firsts = new ArrayList<>();
@@ -796,6 +802,11 @@ class FullChainSimulationTest {
             for (SyncGroup group : all) {
                 if (group.shouldTick(millis)) group.tick(millis, sink);
             }
+            int bigInFlight = 0;
+            for (SyncGroup group : all) {
+                if (group.openBatchBytesForTesting(viewer) > SyncGroup.smallBatchBytesForTesting()) bigInFlight++;
+            }
+            lastMostBigFramesInFlight = Math.max(lastMostBigFramesInFlight, bigInFlight);
             queue.flush(link, budget, nanos);
             link.advance(dt);
             if (t > 10) late.add(link.pending / bandwidth);
@@ -807,10 +818,13 @@ class FullChainSimulationTest {
                         if (pixels != null && pixels[0] >= 10 && pixels[0] <= 30) values.add((int) pixels[0]);
                     }
                     lastMaxDistinct = Math.max(lastMaxDistinct, values.size());
+                    samplesTaken++;
+                    if (values.size() > 1) mosaicSamples++;
                 }
             }
             Thread.sleep(1);
         }
+        lastMosaicFraction = samplesTaken == 0 ? 0 : mosaicSamples / (double) samplesTaken;
         Collections.sort(late);
         double[] result = new double[specs.length + 1];
         double warmup = 10;
@@ -940,11 +954,29 @@ class FullChainSimulationTest {
         testMaxRate = 8_388_608;
         try {
             double[] r = runMixed(specs, 20_000_000, 0.10, 24, 1400);
-            System.out.printf("ADMISSION link 20 MB/s, limit 8 MB/s: 4 huge gifs %.1f/s, 3 big gifs %.1f/s, 3 small gifs %.1f/s; added ping p95 %.0f ms; paused gifs: %d of 10; no gif shows more than %d frames at once%n",
-                    r[0], r[1], r[2], r[3] * 1000, lastFrozenAtEnd, lastMaxDistinct);
+            System.out.printf("ADMISSION link 20 MB/s, limit 8 MB/s: 4 huge gifs %.1f/s, 3 big gifs %.1f/s, 3 small gifs %.1f/s; added ping p95 %.0f ms; paused gifs: %d of 10; no gif shows more than %d frames at once; the big gifs are a mosaic of several frames %.0f%% of the time%n",
+                    r[0], r[1], r[2], r[3] * 1000, lastFrozenAtEnd, lastMaxDistinct, lastMosaicFraction * 100);
             assertTrue(r[2] >= 17, "the cheap gifs must run at nearly full speed: " + r[2]);
             assertTrue(r[3] < 0.04, "added ping with the limit: " + r[3]);
             assertTrue(lastFrozenAtEnd >= 4, "gifs that do not fit the budget must be paused: " + lastFrozenAtEnd);
+        } finally {
+            testAdmission = false;
+            testMaxRate = MAX_RATE;
+        }
+    }
+
+    @Test
+    void whenManyHugeGifsCompeteEachFrameArrivesAsOneQuickBurstNotAConstantWipe() throws Exception {
+        int[][] specs = {{3, 176, 128, 10}, {2, 120, 128, 10}, {3, 36, 128, 12}, {3, 9, 64, 20}};
+        testAdmission = true;
+        testMaxRate = 8_388_608;
+        try {
+            double[] r = runMixed(specs, 20_000_000, 0.04, 40, 2900);
+            System.out.printf("USERLIKE link 20 MB/s, limit 8 MB/s, 8 big gifs + 3 small: 176-map gifs %.1f/s, 120-map %.1f/s, 36-map %.1f/s, 9-map %.1f/s; added ping p95 %.0f ms; paused %d of 11; at most %d frames at once; mosaic of several frames %.0f%% of the time%n",
+                    r[0], r[1], r[2], r[3], r[4] * 1000, lastFrozenAtEnd, lastMaxDistinct, lastMosaicFraction * 100);
+            assertTrue(r[4] < 0.04, "added ping with the limit: " + r[4]);
+            assertTrue(lastMosaicFraction < MOSAIC_LIMIT, "the big gifs are a patchwork of frames too much of the time: " + lastMosaicFraction);
+            assertTrue(lastMostBigFramesInFlight <= 1, "several big frames were half sent at the same time: " + lastMostBigFramesInFlight);
         } finally {
             testAdmission = false;
             testMaxRate = MAX_RATE;
