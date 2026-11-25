@@ -75,6 +75,7 @@ public class RenderManager implements FrameSink {
         this.maxPacketsPerTick = configManager.maxPacketsPerTick;
         this.admissionEnabled = configManager.limitAnimatedGifs;
         SyncGroup.scatterOrder = configManager.scatterMapUpdates;
+        MapRects.enabled = configManager.sparseGifUpdates;
         this.viewDistance = configManager.viewDistanceBlocks > 0 ? (double) configManager.viewDistanceBlocks : 96.0;
         this.animatedViewDistance = configManager.animatedViewDistanceBlocks;
         this.tuning = new PlayerSendQueue.Tuning(

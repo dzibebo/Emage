@@ -38,6 +38,10 @@ performance:
   # change in a scattered order across the whole picture, which looks like a soft fade; with false they change from the
   # point the player looks at outwards, which looks like a moving wave.
   scatter-map-updates: true
+  # A GIF changes only a part of every map from frame to frame, but the part that changed has a big bounding box. With true
+  # (default) Emage sends just the changed areas as a few small rectangles when that saves at least 30% of the traffic, so
+  # the same connection carries several times more GIF frames. Set to false to always send the one big bounding box.
+  sparse-gif-updates: true
   # Set to false to rely only on the network buffer fill level (for clients/proxies that mishandle ping packets).
   latency-probe: true
 

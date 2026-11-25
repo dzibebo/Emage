@@ -20,6 +20,7 @@ public class ConfigManager {
     public boolean latencyProbe;
     public boolean limitAnimatedGifs;
     public boolean scatterMapUpdates;
+    public boolean sparseGifUpdates;
 
     public String dbFileName;
     public int dbPoolSize;
@@ -96,6 +97,7 @@ public class ConfigManager {
         this.latencyProbe = config.getBoolean("performance.latency-probe", true);
         this.limitAnimatedGifs = config.getBoolean("performance.limit-animated-gifs", true);
         this.scatterMapUpdates = config.getBoolean("performance.scatter-map-updates", true);
+        this.sparseGifUpdates = config.getBoolean("performance.sparse-gif-updates", true);
 
         this.dbFileName = config.getString("storage.database.file-name", "emage_meta.db");
         this.dbPoolSize = config.getInt("storage.database.pool-size", 2);
